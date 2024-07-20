@@ -6,11 +6,11 @@ import platform
 nvhpc_ver = '24.3'
 cuda_ver = '12.3'
 gcc_ver = '13'
-llvm_ver = '18'
+llvm_ver = '17'
 cmake_ver = '3.27.2'
 boost_ver = '1.75.0'
 
-Stage0 += baseimage(image = f'nvcr.io/nvidia/nvhpc:{nvhpc_ver}-devel-cuda{cuda_ver}-ubuntu22.04')
+Stage0 += baseimage(image = f'nvcr.io/nvidia/nvhpc:{nvhpc_ver}-devel-cuda{cuda_ver}-ubuntu20.04')
 
 arch = 'x86_64'
 if platform.machine() == 'aarch64':
