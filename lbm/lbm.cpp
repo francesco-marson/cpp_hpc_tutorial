@@ -141,65 +141,73 @@ void computeMoments(Grid& g) {
 void collide_stream_step(Grid& g, bool even) {
   T tau = 1.0;
   T omega = 1.0 / tau;
-  T ulb = 0.1;
+  T ulb = 0.01;
 
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
-  auto is = std::views::iota(0, 9);
-  auto ids = std::views::cartesian_product(is, xs, ys);
+//  auto is = std::views::iota(0, 9);
+  auto ids = std::views::cartesian_product(xs, ys);
 
   std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
-    auto [ii, x, y] = idx;
-    size_t i = ii;
-    size_t i_out = g.oppositeIndex(i);
+    auto [x, y] = idx;
 
     // even: streamPull -> collide -> swapPush
     // odd:  staticPull -> collide -> swapPush
 
     // Stream step (Pull), then collide
-    int x_stream = x - g.cx[i];
-    int y_stream = y - g.cy[i];
 
-    T tmpf[9];
-    T feq[9];
+    std::array<T,9> tmpf;
+    std::array<T,9> feq;
+    for (int i = 0; i < 9; ++i) {
 
-    // pull
-    if (even) {
-      if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-        tmpf[i] = g.f[g.index(x_stream, y_stream, i)];
-      } /*else if (x == g.ny - 1 and g.cy[ii] == 1) {
-        tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))] *//*- 2. * 3. * ulb*g.cx[ii]*g.w[ii]*//*;
-      }*/ else {
+      int x_stream = x - g.cx[i];
+      int y_stream = y - g.cy[i];
+      // pull
+      if (even) {
+        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
+          tmpf[i] = g.f[g.index(x_stream, y_stream, i)];
+        } else if (y == g.ny - 1 and g.cy[i] == 1) {
+          tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+        } else {
+          tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))];
+        }
+      } else {
         tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))];
       }
-    } else {
-      tmpf[i] = g.f[g.index(x, y, i_out)];
     }
 
     // Compute equilibrium distribution
     T rho = g.rho[y * g.nx + x];
     T ux = g.u[y * g.nx + x];
     T uy = g.v[y * g.nx + x];
+    for (int i = 0; i < 9; ++i) {
     T cu = 3.0 * (g.cx[i] * ux + g.cy[i] * uy);
     T u_sq = 1.5 * (ux * ux + uy * uy);
-    feq[i] = g.w[i] * rho * (1 + cu + 0.5 * cu * cu - u_sq);
+      feq[i] = g.w[i] * rho * (1 + cu + 0.5 * cu * cu - u_sq);
 
-    // Collision step
-    tmpf[i] = tmpf[i] * (1 - omega) + feq[i] * omega;
-
+      // Collision step
+      tmpf[i] = tmpf[i] * (1 - omega) + feq[i] * omega;
+    }
     // Handling boundaries in-place
     // Bounce-back boundary conditions
 
     //push
-    if(even){
-      if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny)
-        g.f[g.index(x_stream, y_stream, i)] = tmpf[g.oppositeIndex(i)];
-      else
+    for (int i = 0; i < 9; ++i) {
+      int x_stream = x - g.cx[i];
+      int y_stream = y - g.cy[i];
+      if (even) {
+        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
+          g.f[g.index(x_stream, y_stream, i)] = tmpf[g.oppositeIndex(i)];
+        }
+        if (y == g.ny - 1 and g.cy[i] == 1) {
+          g.f[g.index(x, y, i)] = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+        } else {
+          g.f[g.index(x, y, i)] = tmpf[i];
+        }
+      } else { // odd
         g.f[g.index(x, y, i)] = tmpf[i];
-    } else { // odd
-      g.f[g.index(x, y, i)] = tmpf[i];
+      }
     }
-
   });
 }
 
@@ -212,7 +220,7 @@ int main() {
   Grid g(nx, ny);
 
   // Time-stepping loop
-    int num_steps = 1000;
+    int num_steps = 100;
     for (int t = 0; t < num_steps; ++t) {
       // Compute macroscopic variables using the new function
       computeMoments(g);
