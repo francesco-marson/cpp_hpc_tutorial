@@ -191,7 +191,7 @@ void collide_stream_step(Grid& g, bool even) {
   std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
     auto [x, y] = idx;
 
-    // even: streamPull -> collide -> swapPush
+    // even: streamPull -> collide -> streamPush
     // odd: staticPull -> collide -> swapPush
 
     // Stream step (Pull), then collide
@@ -205,7 +205,7 @@ void collide_stream_step(Grid& g, bool even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f(x_stream, y_stream, i);
         } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
-          tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * 3. * ulb * g.cx[i] * g.w[i];
+          tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * ulb * g.cx[i] * g.w[i];
         } else {
           tmpf[i] = g.f(x, y, g.oppositeIndex(i));
         }
@@ -244,7 +244,7 @@ void collide_stream_step(Grid& g, bool even) {
           g.f(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
         }
         if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
-          g.f(x, y, i) = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+          g.f(x, y, i) = tmpf[i] - 2. * ulb * g.cx[i] * g.w[i];
         } else {
           g.f(x, y, i) = tmpf[i];
         }
@@ -263,10 +263,12 @@ int main() {
   // Setup grid and initial conditions
   Grid g(nx, ny);
 
-  // Time-stepping loop
-  int num_steps = 100;
-  constexpr int truncation_level = 1;  // Level of polynomial truncation for equilibrium
+  // Time-stepping loop parameters
+  int num_steps = 10;
+  int outputIter = 2;  // Output every 2 iterations, change this value as needed
+  constexpr int truncation_level = 2; // Level of polynomial truncation for equilibrium
 
+  // Loop over time steps
   for (int t = 0; t < num_steps; ++t) {
     // Compute macroscopic variables using the new function
     computeMoments(g);
@@ -274,30 +276,35 @@ int main() {
     // Toggle between different streaming steps
     bool even = (t % 2 == 0);
     collide_stream_step<truncation_level>(g, even);
-  }
 
-  // Define the mdspan for all_data and md2
-  std::vector<double> ptsV(nx * ny * 3);  // Note 3 instead of 2 for coordinates
-  std::vector<double> f0V(nx * ny * 3);   // Note 3 instead of 2 for velocity components
+    // Output results every outputIter iterations
+    if (t % outputIter == 0) {
+      // Define the mdspan for all_data and md2
+      std::vector<double> ptsV(nx * ny * 3);  // Note 3 instead of 2 for coordinates
+      std::vector<double> f0V(nx * ny * 3);   // Note 3 instead of 2 for velocity components
 
-  auto pts = std::experimental::mdspan(ptsV.data(), nx, ny, 3);
-  auto f0 = std::experimental::mdspan(f0V.data(), nx, ny, 3);
+      auto pts = std::experimental::mdspan(ptsV.data(), nx, ny, 3);
+      auto f0 = std::experimental::mdspan(f0V.data(), nx, ny, 3);
 
-  for (int x = 0; x < nx; ++x) {
-    for (int y = 0; y < ny; ++y) {
-      pts(x, y, 0) = x;
-      pts(x, y, 1) = y;
-      pts(x, y, 2) = 0.0;
+      for (int x = 0; x < nx; ++x) {
+        for (int y = 0; y < ny; ++y) {
+          pts(x, y, 0) = x;
+          pts(x, y, 1) = y;
+          pts(x, y, 2) = 0.0;
 
-      f0(x, y, 0) = g.u(x, y);
-      f0(x, y, 1) = g.v(x, y);
-      f0(x, y, 2) = 0.0;
+          f0(x, y, 0) = g.u(x, y);
+          f0(x, y, 1) = g.v(x, y);
+          f0(x, y, 2) = 0.0;
+        }
+      }
+
+      // Write to VTK file with the iteration number in the filename
+      std::string filename = "output_" + std::to_string(t) + ".vtk";
+      writeVTK2D(filename, pts, f0, nx, ny);
     }
   }
-
-  // Write to VTK file
-  writeVTK2D("output.vtk", pts, f0, nx, ny);
 
   std::cout << "Simulation complete.\n";
   return 0;
 }
+
