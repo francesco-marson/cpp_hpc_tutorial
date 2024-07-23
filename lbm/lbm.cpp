@@ -7,7 +7,6 @@
 #include <numeric>
 #include <array>
 #include <cartesian_product.hpp>  // Brings C++23 std::views::cartesian_product to C++20
-
 #include <fstream>
 #include <string>
 
@@ -30,9 +29,8 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
   out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n';  // Z dimension is 1 for 2D data
   out << "POINTS " << N << " double\n";
 
-  // Writing point coordinates
-  for (int ix = 0; ix < NX; ix++) {
-    for (int iy = 0; iy < NY; iy++) {
+  for (int ix = 0; ix < NX; ++ix) {
+    for (int iy = 0; iy < NY; ++iy) {
       out << grid_coordinates(ix, iy, 0) << " " << grid_coordinates(ix, iy, 1) << " " << grid_coordinates(ix, iy, 2) << '\n';
     }
   }
@@ -40,9 +38,9 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
   // Writing scalar or vector field data
   out << "POINT_DATA " << N << '\n';
   out << "VECTORS velocity double\n";
-  for (int ix = 0; ix < NX; ix++) {
-    for (int iy = 0; iy < NY; iy++) {
-      for (int ic1 = 0; ic1 < md2.extent(2); ic1++) {  // Assuming md2.extent(2) is correctly returning the third dimension size
+  for (int ix = 0; ix < NX; ++ix) {
+    for (int iy = 0; iy < NY; ++iy) {
+      for (int ic1 = 0; ic1 < md2.extent(2); ++ic1) {  // Assuming md2.extent(2) is correctly returning the third dimension size
         out << md2(ix, iy, ic1) << ' ';  // Considering md2 is 3D, change accordingly if it's 4D or different
       }
       // Ensure only three components per line for vectors
@@ -84,19 +82,19 @@ struct Grid {
   }
 
   void initialize() {
-    for (int y = 0; y < ny; ++y) {
-      for (int x = 0; x < nx; ++x) {
+    for (int x = 0; x < nx; ++x) {
+      for (int y = 0; y < ny; ++y) {
         T rho_val = 1.0;
         T ux = 0.0;
         T uy = 0.0;
-        rho(y, x) = rho_val;
-        u(y, x) = ux;
-        v(y, x) = uy;
+        rho(x, y) = rho_val;
+        u(x, y) = ux;
+        v(x, y) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          feq(y, x, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
-          f(y, x, i) = feq(y, x, i);
+          feq(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
+          f(x, y, i) = feq(x, y, i);
         }
       }
     }
@@ -105,17 +103,17 @@ struct Grid {
 
 // Compute macroscopic variables
 void compute_macroscopic(Grid &g) {
-  for (int y = 0; y < g.ny; ++y) {
-    for (int x = 0; x < g.nx; ++x) {
+  for (int x = 0; x < g.nx; ++x) {
+    for (int y = 0; y < g.ny; ++y) {
       T rho = 0.0, ux = 0.0, uy = 0.0;
       for (int i = 0; i < 9; ++i) {
-        rho += g.f(y, x, i);
-        ux += g.f(y, x, i) * g.cx[i];
-        uy += g.f(y, x, i) * g.cy[i];
+        rho += g.f(x, y, i);
+        ux += g.f(x, y, i) * g.cx[i];
+        uy += g.f(x, y, i) * g.cy[i];
       }
-      g.rho(y, x) = rho;
-      g.u(y, x) = ux / rho;
-      g.v(y, x) = uy / rho;
+      g.rho(x, y) = rho;
+      g.u(x, y) = ux / rho;
+      g.v(x, y) = uy / rho;
     }
   }
 }
@@ -131,17 +129,57 @@ void computeMoments(Grid &g) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      rho += g.f(y, x, i);
-      ux += g.f(y, x, i) * g.cx[i];
-      uy += g.f(y, x, i) * g.cy[i];
+      rho += g.f(x, y, i);
+      ux += g.f(x, y, i) * g.cx[i];
+      uy += g.f(x, y, i) * g.cy[i];
     }
-    g.rho(y, x) = rho;
-    g.u(y, x) = ux / rho;
-    g.v(y, x) = uy / rho;
+    g.rho(x, y) = rho;
+    g.u(x, y) = ux / rho;
+    g.v(x, y) = uy / rho;
   });
 }
 
-void collide_stream_step(Grid &g, bool even) {
+template<int truncation_level>
+void computeEquilibrium(const Grid& g, int x, int y, std::array<T, 9>& feq) {
+  T rho = g.rho(x, y);
+  T ux = g.u(x, y);
+  T uy = g.v(x, y);
+  T ux2 = ux * ux;
+  T uy2 = uy * uy;
+  T u_sq = ux2 + uy2;
+  T invCs2 = 3.0;  // Inverse squared speed of sound
+
+  for (int i = 0; i < 9; ++i) {
+    T cu = g.cx[i] * ux + g.cy[i] * uy;
+    T cu2 = cu * cu;
+
+    // Base term: w[i] * rho
+    feq[i] = g.w[i] * rho;
+
+    // Linear term: (1 + invCs2 * cu)
+    if constexpr (truncation_level >= 1) {
+      feq[i] *= (1 + invCs2 * cu);
+    }
+
+    // Quadratic term: + 0.5 * invCs2 * invCs2 * cu2 - invCs2 * 0.5 * u_sq
+    if constexpr (truncation_level >= 2) {
+      feq[i] *= (1 + 0.5 * invCs2 * cu2 - 0.5 * invCs2 * u_sq);
+    }
+
+    // Cubic term: + (1/6) * invCs2 * cu * cu2
+    if constexpr (truncation_level >= 3) {
+      feq[i] *= (1 + (1.0 / 6.0) * invCs2 * cu * cu2);
+    }
+
+    // Quartic term: + (1/24) * invCs2 * invCs2 * cu2 * cu2 - (1/4) * invCs2 * invCs2 * u_sq * cu2
+    if constexpr (truncation_level >= 4) {
+      feq[i] *= (1 + (1.0 / 24.0) * invCs2 * invCs2 * cu2 * cu2 - 0.25 * invCs2 * invCs2 * u_sq * cu2);
+    }
+  }
+}
+
+template<int truncation_level>
+void collide_stream_step(Grid& g, bool even) {
   T tau = 2.0;
   T omega = 1.0 / tau;
   T ulb = 0.01;
@@ -165,33 +203,32 @@ void collide_stream_step(Grid &g, bool even) {
       // pull
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          tmpf[i] = g.f(y_stream, x_stream, i);
+          tmpf[i] = g.f(x_stream, y_stream, i);
         } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
-          tmpf[i] = g.f(y, x, g.oppositeIndex(i)) - 2. * 3. * ulb * g.cx[i] * g.w[i];
+          tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
-          tmpf[i] = g.f(y, x, g.oppositeIndex(i));
+          tmpf[i] = g.f(x, y, g.oppositeIndex(i));
         }
       } else {
-        tmpf[i] = g.f(y, x, g.oppositeIndex(i));
+        tmpf[i] = g.f(x, y, g.oppositeIndex(i));
       }
     }
 
-    // Compute equilibrium distribution
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       rho += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
     }
-    g.rho(y, x) = rho;
-    g.u(y, x) = ux / rho;
-    g.v(y, x) = uy / rho;
-    for (int i = 0; i < 9; ++i) {
-      T cu = (g.cx[i] * ux + g.cy[i] * uy);
-      T invCs2 = 3.;
-      feq[i] = g.w[i] * rho * (1. + cu * invCs2);
+    g.rho(x, y) = rho;
+    g.u(x, y) = ux / rho;
+    g.v(x, y) = uy / rho;
 
-      // Collision step
+    // Compute equilibrium distribution
+    computeEquilibrium<truncation_level>(g, x, y, feq);
+
+    // Collision step
+    for (int i = 0; i < 9; ++i) {
       tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
     }
 
@@ -204,15 +241,15 @@ void collide_stream_step(Grid &g, bool even) {
       int y_stream = y + g.cy[i];
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          g.f(y_stream, x_stream, g.oppositeIndex(i)) = tmpf[i];
+          g.f(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
         }
         if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
-          g.f(y, x, i) = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+          g.f(x, y, i) = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
-          g.f(y, x, i) = tmpf[i];
+          g.f(x, y, i) = tmpf[i];
         }
       } else {  // odd
-        g.f(y, x, i) = tmpf[i];
+        g.f(x, y, i) = tmpf[i];
       }
     }
   });
@@ -228,13 +265,15 @@ int main() {
 
   // Time-stepping loop
   int num_steps = 100;
+  constexpr int truncation_level = 1;  // Level of polynomial truncation for equilibrium
+
   for (int t = 0; t < num_steps; ++t) {
     // Compute macroscopic variables using the new function
-    // computeMoments(g);
+    computeMoments(g);
 
     // Toggle between different streaming steps
     bool even = (t % 2 == 0);
-    collide_stream_step(g, even);
+    collide_stream_step<truncation_level>(g, even);
   }
 
   // Define the mdspan for all_data and md2
@@ -250,8 +289,8 @@ int main() {
       pts(x, y, 1) = y;
       pts(x, y, 2) = 0.0;
 
-      f0(x, y, 0) = g.u(y, x);
-      f0(x, y, 1) = g.v(y, x);
+      f0(x, y, 0) = g.u(x, y);
+      f0(x, y, 1) = g.v(x, y);
       f0(x, y, 2) = 0.0;
     }
   }
