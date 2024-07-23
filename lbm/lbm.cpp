@@ -159,14 +159,13 @@ void collide_stream_step(Grid& g, bool even) {
     std::array<T,9> tmpf;
     std::array<T,9> feq;
     for (int i = 0; i < 9; ++i) {
-
       int x_stream = x - g.cx[i];
       int y_stream = y - g.cy[i];
       // pull
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f[g.index(x_stream, y_stream, i)];
-        } else if (y == g.ny - 1 and g.cy[i] == 1) {
+        } else if (y == g.ny - 1 and g.cy[i] == 1 and (y_stream == g.ny)) {
           tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))] - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
           tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))];
@@ -177,29 +176,36 @@ void collide_stream_step(Grid& g, bool even) {
     }
 
     // Compute equilibrium distribution
-    T rho = g.rho[y * g.nx + x];
-    T ux = g.u[y * g.nx + x];
-    T uy = g.v[y * g.nx + x];
+    T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-    T cu = 3.0 * (g.cx[i] * ux + g.cy[i] * uy);
-    T u_sq = 1.5 * (ux * ux + uy * uy);
-      feq[i] = g.w[i] * rho * (1 + cu + 0.5 * cu * cu - u_sq);
+      rho += tmpf[i];
+      ux += tmpf[i] * g.cx[i];
+      uy += tmpf[i] * g.cy[i];
+    }
+    g.rho[y * g.nx + x] = rho;
+    g.u[y * g.nx + x] = ux / rho;
+    g.v[y * g.nx + x] = uy / rho;
+    for (int i = 0; i < 9; ++i) {
+    T cu = (g.cx[i] * ux + g.cy[i] * uy);
+    T invCs2 = 3.;
+    T u_sq = (ux * ux + uy * uy);
+      feq[i] = g.w[i] * rho * (1. + cu*invCs2 /*+ 0.5 * cu * cu *invCs2*invCs2- u_sq*/);
 
       // Collision step
-      tmpf[i] = tmpf[i] * (1 - omega) + feq[i] * omega;
+      tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
     }
     // Handling boundaries in-place
     // Bounce-back boundary conditions
 
     //push
     for (int i = 0; i < 9; ++i) {
-      int x_stream = x - g.cx[i];
-      int y_stream = y - g.cy[i];
+      int x_stream = x + g.cx[i];
+      int y_stream = y + g.cy[i];
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           g.f[g.index(x_stream, y_stream, i)] = tmpf[g.oppositeIndex(i)];
         }
-        if (y == g.ny - 1 and g.cy[i] == 1) {
+        if (y == g.ny - 1 and g.cy[i] == 1 and (y_stream == g.ny)) {
           g.f[g.index(x, y, i)] = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
           g.f[g.index(x, y, i)] = tmpf[i];
@@ -223,7 +229,7 @@ int main() {
     int num_steps = 100;
     for (int t = 0; t < num_steps; ++t) {
       // Compute macroscopic variables using the new function
-      computeMoments(g);
+//      computeMoments(g);
 
       // Toggle between different streaming steps
       bool even = (t % 2 == 0);
@@ -231,23 +237,24 @@ int main() {
     }
 
   // Define the mdspan for all_data and md2
-  std::vector<double> pts_data(nx * ny * 3);  // Note 3 instead of 2 for coordinates
-  std::vector<double> f0_data(nx * ny * 3);   // Note 3 instead of 2 for velocity components
+    std::vector<double> pts_data(nx * ny * 3);  // Note 3 instead of 2 for coordinates
+    std::vector<double> f0_data(nx * ny * 3);   // Note 3 instead of 2 for velocity components
 
-  for (int x = 0; x < nx; ++x) {
-    for (int y = 0; y < ny; ++y) {
-      pts_data[(y * nx + x) * 3 + 0] = x;
-      pts_data[(y * nx + x) * 3 + 1] = y;
-      pts_data[(y * nx + x) * 3 + 2] = 0.0;
+    auto pts = std::experimental::mdspan(pts_data.data(), nx, ny, 3);
+    auto f0 = std::experimental::mdspan(f0_data.data(), nx, ny, 3);
 
-      f0_data[(y * nx + x) * 3 + 0] = g.u[y * nx + x];
-      f0_data[(y * nx + x) * 3 + 1] = g.v[y * nx + x];
-      f0_data[(y * nx + x) * 3 + 2] = 0.0;
+    for (int x = 0; x < nx; ++x) {
+      for (int y = 0; y < ny; ++y) {
+        pts(x, y, 0) = x;
+        pts(x, y, 1) = y;
+        pts(x, y, 2) = 0.0;
+
+        f0(x, y, 0) = g.u[y * nx + x];
+        f0(x, y, 1) = g.v[y * nx + x];
+        f0(x, y, 2) = 0.0;
+      }
     }
-  }
 
-  auto pts = std::experimental::mdspan(pts_data.data(), nx, ny, 3);
-  auto f0 = std::experimental::mdspan(f0_data.data(), nx, ny, 3);
 
   // Write to VTK file
   writeVTK2D("output.vtk", pts, f0, nx, ny);
