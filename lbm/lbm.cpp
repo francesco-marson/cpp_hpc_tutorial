@@ -6,7 +6,7 @@
 #include <execution>
 #include <numeric>
 #include <array>
-#include <cartesian_product.hpp> // Brings C++23 std::views::cartesian_product to C++20
+#include <cartesian_product.hpp>  // Brings C++23 std::views::cartesian_product to C++20
 
 #include <fstream>
 #include <string>
@@ -62,17 +62,20 @@ void writeVTK2D(const std::string &filename, const T1 &all_data, const T2 &md2, 
 struct Grid {
   int nx, ny;
   T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
-  std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
-  std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
-  std::vector<T> f, feq, rho, u, v;
+  std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1,  1};
+  std::array<int, 9> cy = {0, 0, 1,  0, -1, 1,  1, -1, -1};
+
+  std::vector<T> f_data, feq_data, rho_data, u_data, v_data;
+  std::experimental::mdspan<T, std::experimental::dextents<int, 3>> f, feq;
+  std::experimental::mdspan<T, std::experimental::dextents<int, 2>> rho, u, v;
 
   Grid(int nx, int ny)
-      : nx(nx), ny(ny), f(nx * ny * 9, 1.0), feq(nx * ny * 9, 1.0), rho(nx * ny, 1.0),
-        u(nx * ny, 0.0), v(nx * ny, 0.0) {
+      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), feq_data(nx * ny * 9, 1.0), rho_data(nx * ny, 1.0),
+        u_data(nx * ny, 0.0), v_data(nx * ny, 0.0),
+        f(f_data.data(), nx, ny, 9), feq(feq_data.data(), nx, ny, 9),
+        rho(rho_data.data(), nx, ny), u(u_data.data(), nx, ny), v(v_data.data(), nx, ny) {
     initialize();
   }
-
-  auto index(int x, int y, int i) const { return (y * nx + x) * 9 + i; }
 
   int oppositeIndex(int i) const {
     // Opposite index based on D2Q9 model
@@ -83,17 +86,17 @@ struct Grid {
   void initialize() {
     for (int y = 0; y < ny; ++y) {
       for (int x = 0; x < nx; ++x) {
-        T rho = 1.0;
+        T rho_val = 1.0;
         T ux = 0.0;
         T uy = 0.0;
-        this->rho[y * nx + x] = rho;
-        u[y * nx + x] = ux;
-        v[y * nx + x] = uy;
+        rho(y, x) = rho_val;
+        u(y, x) = ux;
+        v(y, x) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          feq[index(x, y, i)] = w[i] * rho * (1 + cu + 0.5 * cu * cu - u_sq);
-          f[index(x, y, i)] = feq[index(x, y, i)];
+          feq(y, x, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
+          f(y, x, i) = feq(y, x, i);
         }
       }
     }
@@ -101,24 +104,24 @@ struct Grid {
 };
 
 // Compute macroscopic variables
-void compute_macroscopic(Grid& g) {
+void compute_macroscopic(Grid &g) {
   for (int y = 0; y < g.ny; ++y) {
     for (int x = 0; x < g.nx; ++x) {
       T rho = 0.0, ux = 0.0, uy = 0.0;
       for (int i = 0; i < 9; ++i) {
-        rho += g.f[g.index(x, y, i)];
-        ux += g.f[g.index(x, y, i)] * g.cx[i];
-        uy += g.f[g.index(x, y, i)] * g.cy[i];
+        rho += g.f(y, x, i);
+        ux += g.f(y, x, i) * g.cx[i];
+        uy += g.f(y, x, i) * g.cy[i];
       }
-      g.rho[y * g.nx + x] = rho;
-      g.u[y * g.nx + x] = ux / rho;
-      g.v[y * g.nx + x] = uy / rho;
+      g.rho(y, x) = rho;
+      g.u(y, x) = ux / rho;
+      g.v(y, x) = uy / rho;
     }
   }
 }
 
 // Compute the moments of populations to populate density and velocity vectors in Grid
-void computeMoments(Grid& g) {
+void computeMoments(Grid &g) {
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
   auto coords = std::views::cartesian_product(xs, ys);
@@ -128,50 +131,48 @@ void computeMoments(Grid& g) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      rho += g.f[g.index(x, y, i)];
-      ux += g.f[g.index(x, y, i)] * g.cx[i];
-      uy += g.f[g.index(x, y, i)] * g.cy[i];
+      rho += g.f(y, x, i);
+      ux += g.f(y, x, i) * g.cx[i];
+      uy += g.f(y, x, i) * g.cy[i];
     }
-    g.rho[y * g.nx + x] = rho;
-    g.u[y * g.nx + x] = ux / rho;
-    g.v[y * g.nx + x] = uy / rho;
+    g.rho(y, x) = rho;
+    g.u(y, x) = ux / rho;
+    g.v(y, x) = uy / rho;
   });
 }
 
-void collide_stream_step(Grid& g, bool even) {
+void collide_stream_step(Grid &g, bool even) {
   T tau = 1.0;
   T omega = 1.0 / tau;
   T ulb = 0.01;
 
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
-//  auto is = std::views::iota(0, 9);
   auto ids = std::views::cartesian_product(xs, ys);
 
   std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
     auto [x, y] = idx;
 
     // even: streamPull -> collide -> swapPush
-    // odd:  staticPull -> collide -> swapPush
+    // odd: staticPull -> collide -> swapPush
 
     // Stream step (Pull), then collide
-
-    std::array<T,9> tmpf;
-    std::array<T,9> feq;
+    std::array<T, 9> tmpf;
+    std::array<T, 9> feq;
     for (int i = 0; i < 9; ++i) {
       int x_stream = x - g.cx[i];
       int y_stream = y - g.cy[i];
       // pull
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          tmpf[i] = g.f[g.index(x_stream, y_stream, i)];
-        } else if (y == g.ny - 1 and g.cy[i] == 1 and (y_stream == g.ny)) {
-          tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+          tmpf[i] = g.f(y_stream, x_stream, i);
+        } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
+          tmpf[i] = g.f(y, x, g.oppositeIndex(i)) - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
-          tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))];
+          tmpf[i] = g.f(y, x, g.oppositeIndex(i));
         }
       } else {
-        tmpf[i] = g.f[g.index(x, y, g.oppositeIndex(i))];
+        tmpf[i] = g.f(y, x, g.oppositeIndex(i));
       }
     }
 
@@ -182,36 +183,36 @@ void collide_stream_step(Grid& g, bool even) {
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
     }
-    g.rho[y * g.nx + x] = rho;
-    g.u[y * g.nx + x] = ux / rho;
-    g.v[y * g.nx + x] = uy / rho;
+    g.rho(y, x) = rho;
+    g.u(y, x) = ux / rho;
+    g.v(y, x) = uy / rho;
     for (int i = 0; i < 9; ++i) {
-    T cu = (g.cx[i] * ux + g.cy[i] * uy);
-    T invCs2 = 3.;
-    T u_sq = (ux * ux + uy * uy);
-      feq[i] = g.w[i] * rho * (1. + cu*invCs2 /*+ 0.5 * cu * cu *invCs2*invCs2- u_sq*/);
+      T cu = (g.cx[i] * ux + g.cy[i] * uy);
+      T invCs2 = 3.;
+      feq[i] = g.w[i] * rho * (1. + cu * invCs2);
 
       // Collision step
       tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
     }
+
     // Handling boundaries in-place
     // Bounce-back boundary conditions
 
-    //push
+    // push
     for (int i = 0; i < 9; ++i) {
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          g.f[g.index(x_stream, y_stream, i)] = tmpf[g.oppositeIndex(i)];
+          g.f(y_stream, x_stream, i) = tmpf[g.oppositeIndex(i)];
         }
-        if (y == g.ny - 1 and g.cy[i] == 1 and (y_stream == g.ny)) {
-          g.f[g.index(x, y, i)] = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
+        if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
+          g.f(y, x, i) = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
         } else {
-          g.f[g.index(x, y, i)] = tmpf[i];
+          g.f(y, x, i) = tmpf[i];
         }
-      } else { // odd
-        g.f[g.index(x, y, i)] = tmpf[i];
+      } else {  // odd
+        g.f(y, x, i) = tmpf[i];
       }
     }
   });
@@ -226,35 +227,34 @@ int main() {
   Grid g(nx, ny);
 
   // Time-stepping loop
-    int num_steps = 100;
-    for (int t = 0; t < num_steps; ++t) {
-      // Compute macroscopic variables using the new function
-//      computeMoments(g);
+  int num_steps = 100;
+  for (int t = 0; t < num_steps; ++t) {
+    // Compute macroscopic variables using the new function
+    // computeMoments(g);
 
-      // Toggle between different streaming steps
-      bool even = (t % 2 == 0);
-      collide_stream_step(g, even);
-    }
+    // Toggle between different streaming steps
+    bool even = (t % 2 == 0);
+    collide_stream_step(g, even);
+  }
 
   // Define the mdspan for all_data and md2
-    std::vector<double> pts_data(nx * ny * 3);  // Note 3 instead of 2 for coordinates
-    std::vector<double> f0_data(nx * ny * 3);   // Note 3 instead of 2 for velocity components
+  std::vector<double> pts_data(nx * ny * 3);  // Note 3 instead of 2 for coordinates
+  std::vector<double> f0_data(nx * ny * 3);   // Note 3 instead of 2 for velocity components
 
-    auto pts = std::experimental::mdspan(pts_data.data(), nx, ny, 3);
-    auto f0 = std::experimental::mdspan(f0_data.data(), nx, ny, 3);
+  auto pts = std::experimental::mdspan(pts_data.data(), nx, ny, 3);
+  auto f0 = std::experimental::mdspan(f0_data.data(), nx, ny, 3);
 
-    for (int x = 0; x < nx; ++x) {
-      for (int y = 0; y < ny; ++y) {
-        pts(x, y, 0) = x;
-        pts(x, y, 1) = y;
-        pts(x, y, 2) = 0.0;
+  for (int x = 0; x < nx; ++x) {
+    for (int y = 0; y < ny; ++y) {
+      pts(x, y, 0) = x;
+      pts(x, y, 1) = y;
+      pts(x, y, 2) = 0.0;
 
-        f0(x, y, 0) = g.u[y * nx + x];
-        f0(x, y, 1) = g.v[y * nx + x];
-        f0(x, y, 2) = 0.0;
-      }
+      f0(x, y, 0) = g.u(y, x);
+      f0(x, y, 1) = g.v(y, x);
+      f0(x, y, 2) = 0.0;
     }
-
+  }
 
   // Write to VTK file
   writeVTK2D("output.vtk", pts, f0, nx, ny);
