@@ -14,7 +14,7 @@
 using T = double;
 
 template<typename T1, typename T2>
-void writeVTK2D(const std::string &filename, const T1 &all_data, const T2 &md2, int NX, int NY) {
+void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T2 &md2, int NX, int NY) {
   std::ofstream out(filename);  // Open the file
 
   if (!out.is_open()) {
@@ -33,7 +33,7 @@ void writeVTK2D(const std::string &filename, const T1 &all_data, const T2 &md2, 
   // Writing point coordinates
   for (int ix = 0; ix < NX; ix++) {
     for (int iy = 0; iy < NY; iy++) {
-      out << all_data(ix, iy, 0) << " " << all_data(ix, iy, 1) << " " << 0.0 << '\n';
+      out << grid_coordinates(ix, iy, 0) << " " << grid_coordinates(ix, iy, 1) << " " << grid_coordinates(ix, iy, 2) << '\n';
     }
   }
 
@@ -142,7 +142,7 @@ void computeMoments(Grid &g) {
 }
 
 void collide_stream_step(Grid &g, bool even) {
-  T tau = 1.0;
+  T tau = 2.0;
   T omega = 1.0 / tau;
   T ulb = 0.01;
 
@@ -204,7 +204,7 @@ void collide_stream_step(Grid &g, bool even) {
       int y_stream = y + g.cy[i];
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          g.f(y_stream, x_stream, i) = tmpf[g.oppositeIndex(i)];
+          g.f(y_stream, x_stream, g.oppositeIndex(i)) = tmpf[i];
         }
         if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
           g.f(y, x, i) = tmpf[i] - 2. * 3. * ulb * g.cx[i] * g.w[i];
@@ -238,11 +238,11 @@ int main() {
   }
 
   // Define the mdspan for all_data and md2
-  std::vector<double> pts_data(nx * ny * 3);  // Note 3 instead of 2 for coordinates
-  std::vector<double> f0_data(nx * ny * 3);   // Note 3 instead of 2 for velocity components
+  std::vector<double> ptsV(nx * ny * 3);  // Note 3 instead of 2 for coordinates
+  std::vector<double> f0V(nx * ny * 3);   // Note 3 instead of 2 for velocity components
 
-  auto pts = std::experimental::mdspan(pts_data.data(), nx, ny, 3);
-  auto f0 = std::experimental::mdspan(f0_data.data(), nx, ny, 3);
+  auto pts = std::experimental::mdspan(ptsV.data(), nx, ny, 3);
+  auto f0 = std::experimental::mdspan(f0V.data(), nx, ny, 3);
 
   for (int x = 0; x < nx; ++x) {
     for (int y = 0; y < ny; ++y) {
