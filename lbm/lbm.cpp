@@ -62,15 +62,19 @@ struct Grid {
   T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1,  1};
   std::array<int, 9> cy = {0, 0, 1,  0, -1, 1,  1, -1, -1};
+  T cslb = 1./3.;
+  T cslb2 = cslb*cslb;
+  T invCslb = 1./cslb;
+  T invCslb2 = invCslb*invCslb;
 
-  std::vector<T> f_data, feq_data, rho_data, u_data, v_data;
-  std::experimental::mdspan<T, std::experimental::dextents<int, 3>> f, feq;
+  std::vector<T> f_data, rho_data, u_data, v_data;
+  std::experimental::mdspan<T, std::experimental::dextents<int, 3>> f;
   std::experimental::mdspan<T, std::experimental::dextents<int, 2>> rho, u, v;
 
   Grid(int nx, int ny)
-      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), feq_data(nx * ny * 9, 1.0), rho_data(nx * ny, 1.0),
+      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), rho_data(nx * ny, 1.0),
         u_data(nx * ny, 0.0), v_data(nx * ny, 0.0),
-        f(f_data.data(), nx, ny, 9), feq(feq_data.data(), nx, ny, 9),
+        f(f_data.data(), nx, ny, 9),
         rho(rho_data.data(), nx, ny), u(u_data.data(), nx, ny), v(v_data.data(), nx, ny) {
     initialize();
   }
@@ -93,12 +97,12 @@ struct Grid {
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          feq(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
-          f(x, y, i) = feq(x, y, i);
+          f(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
         }
       }
     }
   }
+
 };
 
 // Compute macroscopic variables
@@ -119,19 +123,21 @@ void compute_macroscopic(Grid &g) {
 }
 
 // Compute the moments of populations to populate density and velocity vectors in Grid
-void computeMoments(Grid &g) {
+void computeMoments(Grid &g, bool even, bool before_cs) {
+  assert(before_cs);
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
   auto coords = std::views::cartesian_product(xs, ys);
 
   // Parallel loop to compute moments
-  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g](auto coord) {
+  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g,before_cs,even](auto coord) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      rho += g.f(x, y, i);
-      ux += g.f(x, y, i) * g.cx[i];
-      uy += g.f(x, y, i) * g.cy[i];
+      int iPop = even ? i : g.oppositeIndex(i);
+      rho += g.f(x, y, iPop);
+      ux += g.f(x, y, iPop) * g.cx[i];
+      uy += g.f(x, y, iPop) * g.cy[i];
     }
     g.rho(x, y) = rho;
     g.u(x, y) = ux / rho;
@@ -140,10 +146,7 @@ void computeMoments(Grid &g) {
 }
 
 template<int truncation_level>
-void computeEquilibrium(const Grid& g, int x, int y, std::array<T, 9>& feq) {
-  T rho = g.rho(x, y);
-  T ux = g.u(x, y);
-  T uy = g.v(x, y);
+void computeEquilibrium(Grid& g, T rho, T ux, T uy, std::array<T, 9>& feq) {
   T ux2 = ux * ux;
   T uy2 = uy * uy;
   T u_sq = ux2 + uy2;
@@ -179,10 +182,9 @@ void computeEquilibrium(const Grid& g, int x, int y, std::array<T, 9>& feq) {
 }
 
 template<int truncation_level>
-void collide_stream_step(Grid& g, bool even) {
-  T tau = 2.0;
+void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
+//  T tau = 2.0;
   T omega = 1.0 / tau;
-  T ulb = 0.01;
 
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
@@ -191,20 +193,16 @@ void collide_stream_step(Grid& g, bool even) {
   std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
     auto [x, y] = idx;
 
-    // even: streamPull -> collide -> streamPush
-    // odd: staticPull -> collide -> swapPush
-
-    // Stream step (Pull), then collide
-    std::array<T, 9> tmpf;
-    std::array<T, 9> feq;
+    std::array<T, 9> tmpf{0};
+    std::array<T, 9> feq{0};
+    T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       int x_stream = x - g.cx[i];
       int y_stream = y - g.cy[i];
-      // pull
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f(x_stream, y_stream, i);
-        } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
+        } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny and x_stream >= 0 && x_stream < g.nx) {
           tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * ulb * g.cx[i] * g.w[i];
         } else {
           tmpf[i] = g.f(x, y, g.oppositeIndex(i));
@@ -212,38 +210,31 @@ void collide_stream_step(Grid& g, bool even) {
       } else {
         tmpf[i] = g.f(x, y, g.oppositeIndex(i));
       }
-    }
 
-    T rho = 0.0, ux = 0.0, uy = 0.0;
-    for (int i = 0; i < 9; ++i) {
+//    }
+//    for (int i = 0; i < 9; ++i) {
+
       rho += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
     }
-    g.rho(x, y) = rho;
-    g.u(x, y) = ux / rho;
-    g.v(x, y) = uy / rho;
+//    g.rho(x, y) = rho;
+//    g.u(x, y) = ux / rho;
+//    g.v(x, y) = uy / rho;
 
-    // Compute equilibrium distribution
-    computeEquilibrium<truncation_level>(g, x, y, feq);
+    computeEquilibrium<truncation_level>(g,rho,ux,uy, feq);
 
-    // Collision step
     for (int i = 0; i < 9; ++i) {
       tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
-    }
-
-    // Handling boundaries in-place
-    // Bounce-back boundary conditions
-
-    // push
-    for (int i = 0; i < 9; ++i) {
+//    }
+//    for (int i = 0; i < 9; ++i) {
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           g.f(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
         }
-        if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny) {
+        if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny and x_stream >= 0 && x_stream < g.nx) {
           g.f(x, y, i) = tmpf[i] - 2. * ulb * g.cx[i] * g.w[i];
         } else {
           g.f(x, y, i) = tmpf[i];
@@ -265,26 +256,38 @@ int main() {
 
   // Time-stepping loop parameters
   int num_steps = 10;
-  int outputIter = 2;  // Output every 2 iterations, change this value as needed
-  constexpr int truncation_level = 2; // Level of polynomial truncation for equilibrium
+  int outputIter = num_steps/10;  // Output every 2 iterations, change this value as needed
+  constexpr int truncation_level = 1; // Level of polynomial truncation for equilibrium
+
+  T Re = 100;
+  T Ma = 0.1;
+
+  T ulb = Ma*g.cslb;
+  T nu = ulb*g.nx/Re;
+  T taubar = nu*g.invCslb2;
+  T tau = taubar+0.5;
+
+  T Tlb = g.nx/ulb;
+
+  printf("T_lb = %f\n", Tlb);
 
   // Loop over time steps
-  for (int t = 0; t < num_steps; ++t) {
-    // Compute macroscopic variables using the new function
-    computeMoments(g);
+  for (int t = 0; t < 10*Tlb; ++t) {
+
 
     // Toggle between different streaming steps
     bool even = (t % 2 == 0);
-    collide_stream_step<truncation_level>(g, even);
 
+    // Compute macroscopic variables using the new function
+    computeMoments(g,even,true);
     // Output results every outputIter iterations
     if (t % outputIter == 0) {
       // Define the mdspan for all_data and md2
       std::vector<double> ptsV(nx * ny * 3);  // Note 3 instead of 2 for coordinates
-      std::vector<double> f0V(nx * ny * 3);   // Note 3 instead of 2 for velocity components
+      std::vector<double> outV(nx * ny * 3);   // Note 3 instead of 2 for velocity components
 
       auto pts = std::experimental::mdspan(ptsV.data(), nx, ny, 3);
-      auto f0 = std::experimental::mdspan(f0V.data(), nx, ny, 3);
+      auto out = std::experimental::mdspan(outV.data(), nx, ny, 3);
 
       for (int x = 0; x < nx; ++x) {
         for (int y = 0; y < ny; ++y) {
@@ -292,16 +295,19 @@ int main() {
           pts(x, y, 1) = y;
           pts(x, y, 2) = 0.0;
 
-          f0(x, y, 0) = g.u(x, y);
-          f0(x, y, 1) = g.v(x, y);
-          f0(x, y, 2) = 0.0;
+          out(x, y, 0) = g.u(x, y);
+          out(x, y, 1) = g.v(x, y);
+          out(x, y, 2) = g.rho(x, y);
         }
       }
 
       // Write to VTK file with the iteration number in the filename
       std::string filename = "output_" + std::to_string(t) + ".vtk";
-      writeVTK2D(filename, pts, f0, nx, ny);
+      writeVTK2D(filename, pts, out, nx, ny);
     }
+
+    collide_stream_step<truncation_level>(g, even,ulb,tau);
+
   }
 
   std::cout << "Simulation complete.\n";
