@@ -10,6 +10,8 @@
 #include <fstream>
 #include <string>
 
+#include <thread>
+
 using T = double;
 
 template<typename T1, typename T2>
@@ -189,9 +191,9 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
   auto ids = std::views::cartesian_product(xs, ys);
-
-  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
+  std::for_each(std::execution::seq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
     auto [x, y] = idx;
+    printf("%d %d\n",x,y);
 
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
@@ -199,43 +201,56 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
     for (int i = 0; i < 9; ++i) {
       int x_stream = x - g.cx[i];
       int y_stream = y - g.cy[i];
+//      printf("x_pull = %d, y_pull = %d\n",x_stream,y_stream);
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f(x_stream, y_stream, i);
-        } else if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny and x_stream >= 0 && x_stream < g.nx) {
-          tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * ulb * g.cx[i] * g.w[i];
+        } else if (y_stream == g.ny) {
+          if(x_stream >= 0 && x_stream < g.nx)
+            tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * ulb * g.cx[i] * g.w[i];
+          else
+            tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 1. * ulb * g.cx[i] * g.w[i];
         } else {
           tmpf[i] = g.f(x, y, g.oppositeIndex(i));
         }
       } else {
         tmpf[i] = g.f(x, y, g.oppositeIndex(i));
       }
-
-//    }
-//    for (int i = 0; i < 9; ++i) {
-
       rho += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
     }
-//    g.rho(x, y) = rho;
-//    g.u(x, y) = ux / rho;
-//    g.v(x, y) = uy / rho;
+//    computeEquilibrium<truncation_level>(g,rho,ux,uy, feq);
 
-    computeEquilibrium<truncation_level>(g,rho,ux,uy, feq);
 
     for (int i = 0; i < 9; ++i) {
+      T ux2 = ux * ux;
+      T uy2 = uy * uy;
+      T u_sq = ux2 + uy2;
+      T cu = g.cx[i] * ux + g.cy[i] * uy;
+      T cu2 = cu * cu;
+      // Base term: w[i] * rho
+      feq[i] = g.w[i] * rho;
+      // Linear term: (1 + invCs2 * cu)
+      if constexpr (truncation_level >= 1) {
+        feq[i] *= (1 + g.invCslb2 * cu);
+      }
+      // Quadratic term: + 0.5 * invCs2 * invCs2 * cu2 - invCs2 * 0.5 * u_sq
+      if constexpr (truncation_level >= 2) {
+        feq[i] *= (1 + 0.5 * g.invCslb2 * cu2 - 0.5 * g.invCslb2 * u_sq);
+      }
       tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
-//    }
-//    for (int i = 0; i < 9; ++i) {
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
+//      printf("x_push = %d, y_push = %d\n",x_stream,y_stream);
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           g.f(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
         }
-        if (y == g.ny - 1 && g.cy[i] == 1 && y_stream == g.ny and x_stream >= 0 && x_stream < g.nx) {
+        if (y_stream == g.ny) {
+          if(x_stream >= 0 && x_stream < g.nx)
           g.f(x, y, i) = tmpf[i] - 2. * ulb * g.cx[i] * g.w[i];
+          else g.f(x, y, i) = tmpf[i] - 1. * ulb * g.cx[i] * g.w[i];
         } else {
           g.f(x, y, i) = tmpf[i];
         }
@@ -243,13 +258,14 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
         g.f(x, y, i) = tmpf[i];
       }
     }
+//    printf("\n\n\n");
   });
 }
 
 int main() {
   // Grid parameters
-  int nx = 50;
-  int ny = 50;
+  int nx = 10;
+  int ny = 10;
 
   // Setup grid and initial conditions
   Grid g(nx, ny);
@@ -259,8 +275,8 @@ int main() {
   int outputIter = num_steps/10;  // Output every 2 iterations, change this value as needed
   constexpr int truncation_level = 1; // Level of polynomial truncation for equilibrium
 
-  T Re = 100;
-  T Ma = 0.1;
+  T Re = 1;
+  T Ma = 0.2;
 
   T ulb = Ma*g.cslb;
   T nu = ulb*g.nx/Re;
@@ -272,8 +288,7 @@ int main() {
   printf("T_lb = %f\n", Tlb);
 
   // Loop over time steps
-  for (int t = 0; t < 10*Tlb; ++t) {
-
+  for (int t = 0; t < 0.1*Tlb; ++t) {
 
     // Toggle between different streaming steps
     bool even = (t % 2 == 0);
@@ -297,7 +312,7 @@ int main() {
 
           out(x, y, 0) = g.u(x, y);
           out(x, y, 1) = g.v(x, y);
-          out(x, y, 2) = g.rho(x, y);
+          out(x, y, 2) = 0.0;
         }
       }
 
