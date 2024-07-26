@@ -65,20 +65,25 @@ struct Grid {
   std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1,  1};
   std::array<int, 9> cy = {0, 0, 1,  0, -1, 1,  1, -1, -1};
   T cslb = 1./sqrt(3.);
-  T cslb2 = cslb*cslb;
-  T invCslb = 1./cslb;
-  T invCslb2 = invCslb*invCslb;
+  T cslb2 = cslb * cslb;
+  T invCslb = 1. / cslb;
+  T invCslb2 = invCslb * invCslb;
 
-  std::vector<T> f_data, rho_data, u_data, v_data;
-  std::experimental::mdspan<T, std::experimental::dextents<int, 3>> f;
+  std::vector<T> f_data, rho_data, f_data_2, u_data, v_data;
+  std::experimental::mdspan<T, std::experimental::dextents<int, 3>> f, f_2;
   std::experimental::mdspan<T, std::experimental::dextents<int, 2>> rho, u, v;
 
   Grid(int nx, int ny)
-      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), rho_data(nx * ny, 1.0),
-        u_data(nx * ny, 0.0), v_data(nx * ny, 0.0),
-        f(f_data.data(), nx, ny, 9),
+      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), f_data_2(nx * ny * 9, 1.0),
+        rho_data(nx * ny, 1.0), u_data(nx * ny, 0.0), v_data(nx * ny, 0.0),
+        f(f_data.data(), nx, ny, 9), f_2(f_data_2.data(), nx, ny, 9),
         rho(rho_data.data(), nx, ny), u(u_data.data(), nx, ny), v(v_data.data(), nx, ny) {
+
     initialize();
+  }
+
+  void swap() {
+    std::swap(f, f_2);
   }
 
   int oppositeIndex(int i) const {
@@ -100,6 +105,7 @@ struct Grid {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
           f(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
+          f_2(x, y, i) = f(x, y, i); // Initialize f_2 the same way as f
         }
       }
     }
@@ -181,6 +187,61 @@ void computeEquilibrium(Grid& g, T rho, T ux, T uy, std::array<T, 9>& feq) {
       feq[i] *= (1 + (1.0 / 24.0) * invCs2 * invCs2 * cu2 * cu2 - 0.25 * invCs2 * invCs2 * u_sq * cu2);
     }
   }
+}template<int truncation_level>
+void collide_stream_step_two_populations(Grid& g, T ulb, T tau) {
+  T omega = 1.0 / tau;
+
+  auto xs = std::views::iota(0, g.nx);
+  auto ys = std::views::iota(0, g.ny);
+  auto ids = std::views::cartesian_product(xs, ys);
+
+  // Parallel loop ensuring thread safety
+  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb](auto idx) {
+    auto [x, y] = idx;
+    //        printf("%d %d\n", x, y);
+
+    std::array<T, 9> tmpf{0};
+    std::array<T, 9> feq{0};
+    T rho = 0.0, ux = 0.0, uy = 0.0;
+    for (int i = 0; i < 9; ++i) {
+      tmpf[i] = g.f(x, y, i);
+      rho += tmpf[i];
+      ux += tmpf[i] * g.cx[i];
+      uy += tmpf[i] * g.cy[i];
+    }
+
+    // Compute macroscopic density and velocities
+    ux /= rho;
+    uy /= rho;
+
+    // Compute equilibrium distributions
+    for (int i = 0; i < 9; ++i) {
+      T cu = g.cx[i] * ux + g.cy[i] * uy;
+      T u_sq = ux * ux + uy * uy;
+      T cu_sq = cu * cu;
+
+      feq[i] = g.w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu_sq - 1.5 * u_sq);
+    }
+
+    for (int i = 0; i < 9; ++i) {
+      tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+      int x_stream = x + g.cx[i];
+      int y_stream = y + g.cy[i];
+
+      // Handle periodic and bounce-back boundary conditions
+      if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
+        g.f_2(x_stream, y_stream, i) = tmpf[i];
+      } else {
+        g.f_2(x, y, g.oppositeIndex(i)) = tmpf[i];
+        // Add lid-driven momentum for the moving top wall
+        if (y_stream == g.ny) {
+          // Top boundary
+          g.f_2(x, y, g.oppositeIndex(i)) -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
+        }
+      }
+    }
+  });
+  g.swap();
 }
 
 template<int truncation_level>
@@ -259,16 +320,16 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
 
 int main() {
   // Grid parameters
-  int nx = 100;
-  int ny = 100;
+  int nx = 110;
+  int ny = 110;
 
   // Setup grid and initial conditions
   Grid g(nx, ny);
 
   constexpr int truncation_level = 1; // Level of polynomial truncation for equilibrium
 
-  T Re = 1;
-  T Ma = 0.2;
+  T Re = 0.1;
+  T Ma = 0.1;
 
   T ulb = Ma*g.cslb;
   T nu = ulb*g.nx/Re;
@@ -289,7 +350,7 @@ int main() {
     bool even = (t % 2 == 0);
 
     // Compute macroscopic variables using the new function
-    computeMoments(g,even,true);
+    computeMoments(g,true,true);
     // Output results every outputIter iterations
     if (t % outputIter == 0) {
       // Define the mdspan for all_data and md2
@@ -316,7 +377,7 @@ int main() {
       writeVTK2D(filename, pts, out, nx, ny);
     }
 
-    collide_stream_step<truncation_level>(g, even,ulb,tau);
+    collide_stream_step_two_populations<truncation_level>(g,ulb,tau);
 
   }
 
