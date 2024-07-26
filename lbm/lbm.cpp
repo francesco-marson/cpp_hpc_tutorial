@@ -8,6 +8,8 @@
 #include <cartesian_product.hpp>  // Brings C++23 std::views::cartesian_product to C++20
 #include <fstream>
 #include <string>
+#include <memory> // For std::unique_ptr and std::make_unique
+#include <chrono>
 
     // Define a type alias for convenience
     using T = float;
@@ -110,23 +112,6 @@ struct Grid {
     }
   }
 };
-
-// Compute macroscopic variables
-void compute_macroscopic(Grid &g) {
-  for (int x = 0; x < g.nx; ++x) {
-    for (int y = 0; y < g.ny; ++y) {
-      T rho = 0.0, ux = 0.0, uy = 0.0;
-      for (int i = 0; i < 9; ++i) {
-        rho += g.f_data[g.index(x, y, i)];
-        ux += g.f_data[g.index(x, y, i)] * g.cx[i];
-        uy += g.f_data[g.index(x, y, i)] * g.cy[i];
-      }
-      g.rho_data[g.index2d(x, y)] = rho;
-      g.u_data[g.index2d(x, y)] = ux / rho;
-      g.v_data[g.index2d(x, y)] = uy / rho;
-    }
-  }
-}
 
 // Compute the moments of populations to populate density and velocity vectors in Grid
 void computeMoments(Grid &g, bool even, bool before_cs) {
@@ -259,12 +244,6 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
   });
 }
 
-#include <memory> // For std::unique_ptr and std::make_unique
-//#include <vector>
-#include <chrono>
-//#include <iostream>
-//#include <cstdio>
-//#include <string>
 int main() {
   // Grid parameters
   int nx = 100;
@@ -275,8 +254,8 @@ int main() {
 
   constexpr int truncation_level = 2; // Level of polynomial truncation for equilibrium
 
-  T Re = 10;
-  T Ma = 0.2;
+  T Re = 100;
+  T Ma = 0.1;
 
   T ulb = Ma * g->cslb;
   T nu = ulb * g->nx / Re;
