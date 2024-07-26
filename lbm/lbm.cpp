@@ -64,7 +64,7 @@ struct Grid {
   T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1,  1};
   std::array<int, 9> cy = {0, 0, 1,  0, -1, 1,  1, -1, -1};
-  T cslb = 1./3.;
+  T cslb = 1./sqrt(3.);
   T cslb2 = cslb*cslb;
   T invCslb = 1./cslb;
   T invCslb2 = invCslb*invCslb;
@@ -193,7 +193,7 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
   auto ids = std::views::cartesian_product(xs, ys);
   std::for_each(std::execution::seq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
     auto [x, y] = idx;
-    printf("%d %d\n",x,y);
+//    printf("%d %d\n",x,y);
 
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
@@ -201,19 +201,15 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
     for (int i = 0; i < 9; ++i) {
       int x_stream = x - g.cx[i];
       int y_stream = y - g.cy[i];
-//      printf("x_pull = %d, y_pull = %d\n",x_stream,y_stream);
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f(x_stream, y_stream, i);
-        } else if (y_stream == g.ny) {
-          if(x_stream >= 0 && x_stream < g.nx)
-            tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 2. * ulb * g.cx[i] * g.w[i];
-          else
-            tmpf[i] = g.f(x, y, g.oppositeIndex(i)) - 1. * ulb * g.cx[i] * g.w[i];
         } else {
-          tmpf[i] = g.f(x, y, g.oppositeIndex(i));
+          tmpf[i] = g.f(x, y, g.oppositeIndex(i)) -
+                    ((y_stream == g.ny and x_stream > 1 && x_stream < g.nx-2) ? -2. * g.invCslb2* ulb * g.cx[i] * g.w[i] : 0.0);
         }
-      } else {
+      }
+      else { // odd
         tmpf[i] = g.f(x, y, g.oppositeIndex(i));
       }
       rho += tmpf[i];
@@ -246,17 +242,16 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
       if (even) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           g.f(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
-        }
-        if (y_stream == g.ny) {
-          if(x_stream >= 0 && x_stream < g.nx)
-          g.f(x, y, i) = tmpf[i] - 2. * ulb * g.cx[i] * g.w[i];
-          else g.f(x, y, i) = tmpf[i] - 1. * ulb * g.cx[i] * g.w[i];
-        } else {
-          g.f(x, y, i) = tmpf[i];
+        }else  {
+//          if(x_stream >= 0 && x_stream < g.nx)
+          g.f(x, y, i) = tmpf[i] +
+               ((y_stream == g.ny and x_stream > 1 && x_stream < g.nx-2) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
         }
       } else {  // odd
         g.f(x, y, i) = tmpf[i];
       }
+      if ((x == 0) and y == (g.ny -1) ) g.f(x, y, i) = g.w[i];
+      if ((x == g.nx -1)  and (y == g.ny -1) ) g.f(x, y, i) = g.w[i];
     }
 //    printf("\n\n\n");
   });
@@ -264,15 +259,12 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
 
 int main() {
   // Grid parameters
-  int nx = 10;
-  int ny = 10;
+  int nx = 100;
+  int ny = 100;
 
   // Setup grid and initial conditions
   Grid g(nx, ny);
 
-  // Time-stepping loop parameters
-  int num_steps = 10;
-  int outputIter = num_steps/10;  // Output every 2 iterations, change this value as needed
   constexpr int truncation_level = 1; // Level of polynomial truncation for equilibrium
 
   T Re = 1;
@@ -284,11 +276,14 @@ int main() {
   T tau = taubar+0.5;
 
   T Tlb = g.nx/ulb;
+  // Time-stepping loop parameters
+  int num_steps = 10*Tlb;
+  int outputIter = num_steps/10;  // Output every 2 iterations, change this value as needed
 
   printf("T_lb = %f\n", Tlb);
 
   // Loop over time steps
-  for (int t = 0; t < 0.1*Tlb; ++t) {
+  for (int t = 0; t < num_steps; ++t) {
 
     // Toggle between different streaming steps
     bool even = (t % 2 == 0);
