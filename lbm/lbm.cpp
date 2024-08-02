@@ -175,13 +175,15 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
       tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
+      // Variables to handle periodic boundary conditions
+      int x_stream_periodic = (x_stream + g.nx) % g.nx;
+      int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
       // Handle periodic and bounce-back boundary conditions
-      if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-        g.f_data_2(x_stream, y_stream, i) = tmpf[i];
+      if (true/*x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny*/) {
+        g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       } else {
         g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i];
-
         // Add lid-driven momentum for the moving top wall
         if (y_stream == g.ny) {
           g.f_data_2(x, y, g.oppositeIndex(i)) -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
@@ -247,6 +249,33 @@ void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
     }
   });
 }
+// Initialize function for double shear layer
+void initializeDoubleShearLayer(Grid &g, T ulb) {
+  int nx = g.nx;
+  int ny = g.ny;
+  // Initialize density and velocity fields
+  for (int x = 0; x < nx; ++x) {
+    for (int y = 0; y < ny; ++y) {
+
+      T rho_val = 1.0;
+      // Define velocities based on the double shear layer profile
+      T ux = ulb * sin(2.0 * M_PI * y / ny);
+      T uy = ulb * sin(2.0 * M_PI * x / nx);
+
+      g.rho_data(x, y) = rho_val;
+      g.u_data(x, y) = ux;
+      g.v_data(x, y) = uy;
+
+      // Initialize populations based on equilibrium distribution
+      for (int i = 0; i < 9; ++i) {
+        T cu = g.cx[i] * ux + g.cy[i] * uy;
+        T u_sq = 1.5 * (ux * ux + uy * uy);
+        g.f_data(x, y, i) = g.w[i] * rho_val * (1. + 3. * cu + 4.5 * cu * cu - u_sq);
+        g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initialize f_2 the same way as f
+      }
+    }
+  }
+}
 
 int main() {
   // Grid parameters
@@ -272,6 +301,10 @@ int main() {
   int outputIter = num_steps / 20;
 
   printf("T_lb = %f\n", Tlb);
+
+
+  // Initialize the grid with the double shear layer
+  initializeDoubleShearLayer(*g, ulb);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
