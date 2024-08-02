@@ -5,14 +5,16 @@
 #include <execution>
 #include <numeric>
 #include <array>
+#include <span>
 #include <cartesian_product.hpp>  // Brings C++23 std::views::cartesian_product to C++20
 #include <fstream>
 #include <string>
 #include <memory> // For std::unique_ptr and std::make_unique
 #include <chrono>
+#include "statistics.h"
 
-    // Define a type alias for convenience
-    using T = float;
+// Define a type alias for convenience
+using T = float;
 
 // Function to write VTK file for 2D data
 template<typename T1, typename T2>
@@ -46,7 +48,6 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
       for (int ic1 = 0; ic1 < 3; ++ic1) { // Assuming 3 components for velocity vector
         out << md2[(ix * NY + iy) * 3 + ic1] << ' ';
       }
-      // Ensure only three components per line for vectors
       out << '\n';
     }
   }
@@ -64,12 +65,21 @@ struct Grid {
   T invCslb = 1. / cslb;
   T invCslb2 = invCslb * invCslb;
 
-  std::vector<T> f_data, f_data_2, u_data, v_data, rho_data;
+  std::vector<T> buffer;
+  std::span<T> f_data, f_data_2, u_data, v_data, rho_data;
 
-  Grid(int nx, int ny)
-      : nx(nx), ny(ny), f_data(nx * ny * 9, 1.0), f_data_2(nx * ny * 9, 1.0),
-        u_data(nx * ny, 0.0), v_data(nx * ny, 0.0), rho_data(nx * ny, 1.0)
+  Grid(int nx, int ny) : nx(nx), ny(ny),
+                         buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
   {
+    int total_cells = nx * ny;
+    int f_data_size = total_cells * 9;
+
+    f_data = std::span<T>(buffer.data(), f_data_size);
+    f_data_2 = std::span<T>(buffer.data() + f_data_size, f_data_size);
+    u_data = std::span<T>(buffer.data() + f_data_size * 2, total_cells);
+    v_data = std::span<T>(buffer.data() + f_data_size * 2 + total_cells, total_cells);
+    rho_data = std::span<T>(buffer.data() + f_data_size * 2 + total_cells * 2, total_cells);
+
     initialize();
   }
 
@@ -77,7 +87,6 @@ struct Grid {
     std::swap(f_data, f_data_2);
   }
 
-  // Indexing with `i` as the slowest changing
   int index(int x, int y, int i) const {
     return i * nx * ny + x * ny + y;
   }
@@ -87,7 +96,6 @@ struct Grid {
   }
 
   int oppositeIndex(int i) const {
-    // Opposite index based on D2Q9 model
     const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
     return opposite[i];
   }
@@ -113,6 +121,17 @@ struct Grid {
   }
 };
 
+//T computeTotalEnergy(Grid &g) const {
+//  auto xs = std::views::iota(0, g.nx - 1);
+//  auto ys = std::views::iota(0, g.ny - 1);
+//  auto ids = cartesian_product(xs, ys);
+//  double energy = std::transform_reduce(std::execution::par, begin(ids), end(ids), 0., std::plus{}, [=](auto idx) {
+//    auto [x, y] = idx;
+//    return g.u_data[g.index2d(x, y)] * g.u_data[g.index2d(x, y)] + g.v_data[g.index2d(x, y)] * g.v_data[g.index2d(x, y)];
+//  });
+//  return energy;
+//}
+
 // Compute the moments of populations to populate density and velocity vectors in Grid
 void computeMoments(Grid &g, bool even, bool before_cs) {
   assert(before_cs);
@@ -121,7 +140,7 @@ void computeMoments(Grid &g, bool even, bool before_cs) {
   auto coords = std::views::cartesian_product(xs, ys);
 
   // Parallel loop to compute moments
-  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g,before_cs,even](auto coord) {
+  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, before_cs, even](auto coord) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
@@ -136,9 +155,8 @@ void computeMoments(Grid &g, bool even, bool before_cs) {
   });
 }
 
-
 template<int truncation_level>
-void collide_stream_step_two_populations(Grid& g, T ulb, T tau) {
+void collide_stream_two_populations(Grid &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
   auto xs = std::views::iota(0, g.nx);
@@ -163,8 +181,6 @@ void collide_stream_step_two_populations(Grid& g, T ulb, T tau) {
     uy /= rho;
 
     // Compute equilibrium distributions
-//    computeEquilibrium<truncation_level>(g, rho, ux, uy, feq);
-
     for (int i = 0; i < 9; ++i) {
       T cu = g.cx[i] * ux + g.cy[i] * uy;
       T u_sq = ux * ux + uy * uy;
@@ -180,6 +196,7 @@ void collide_stream_step_two_populations(Grid& g, T ulb, T tau) {
         g.f_data_2[g.index(x_stream, y_stream, i)] = tmpf[i];
       } else {
         g.f_data_2[g.index(x, y, g.oppositeIndex(i))] = tmpf[i];
+
         // Add lid-driven momentum for the moving top wall
         if (y_stream == g.ny) {
           g.f_data_2[g.index(x, y, g.oppositeIndex(i))] -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
@@ -191,7 +208,7 @@ void collide_stream_step_two_populations(Grid& g, T ulb, T tau) {
 }
 
 template<int truncation_level>
-void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
+void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
   T omega = 1.0 / tau;
 
   auto xs = std::views::iota(0, g.nx);
@@ -211,8 +228,7 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           tmpf[i] = g.f_data[g.index(x_stream, y_stream, i)];
         } else {
-          tmpf[i] = g.f_data[g.index(x, y, g.oppositeIndex(i))] +
-                    ((y_stream == g.ny) ? -2. * g.invCslb2* ulb * g.cx[i] * g.w[i] : 0.0);
+          tmpf[i] = g.f_data[g.index(x, y, g.oppositeIndex(i))] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
         }
       } else { // odd
         tmpf[i] = g.f_data[g.index(x, y, g.oppositeIndex(i))];// read-swap
@@ -222,11 +238,15 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
       uy += tmpf[i] * g.cy[i];
     }
 
+    // Compute macroscopic density and velocities
+    ux /= rho;
+    uy /= rho;
+
     for (int i = 0; i < 9; ++i) {
       T cu = g.cx[i] * ux + g.cy[i] * uy;
       T u_sq = ux * ux + uy * uy;
       T cu_sq = cu * cu;
-      feq[i] = g.w[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu_sq - 1.5 * u_sq);
+      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
       tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
@@ -234,10 +254,9 @@ void collide_stream_step(Grid& g, bool even, T ulb, T tau) {
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
           g.f_data[g.index(x_stream, y_stream, g.oppositeIndex(i))] = tmpf[i];
         } else {
-          g.f_data[g.index(x, y, i)] = tmpf[i] +
-                                       ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+          g.f_data[g.index(x, y, i)] = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
         }
-      } else {  // odd
+      } else { // odd
         g.f_data[g.index(x, y, i)] = tmpf[i];
       }
     }
@@ -254,7 +273,7 @@ int main() {
 
   constexpr int truncation_level = 2; // Level of polynomial truncation for equilibrium
 
-  T Re = 100;
+  T Re = 1000;
   T Ma = 0.1;
 
   T ulb = Ma * g->cslb;
@@ -310,12 +329,12 @@ int main() {
 
       output_time += after_out - before_out;
     }
-      collide_stream_step_two_populations<truncation_level>(*g, ulb, tau);
+    collide_stream_two_populations<truncation_level>(*g, ulb, tau);
   }
 
   // End time measurement
   auto end_time = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> elapsed = end_time - start_time-output_time;
+  std::chrono::duration<double> elapsed = end_time - start_time - output_time;
 
   // Compute performance in MLUP/s
   long total_lattice_updates = static_cast<long>(nx) * static_cast<long>(ny) * static_cast<long>(num_steps);

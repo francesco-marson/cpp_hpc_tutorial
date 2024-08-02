@@ -8,11 +8,12 @@ find_package(MPI REQUIRED)
 set(CMAKE_CXX_COMPILER nvc++)
 message("Using compiler: ${CMAKE_CXX_COMPILER}")
 
-set(CMAKE_CXX_FLAGS "-Ofast -march=native -std=c++20 -stdpar=multicore -cudalib=cublas -gpu=managed,fastmath,fma --experimental-stdpar")
+set(CMAKE_CXX_FLAGS "-Ofast -march=native -std=c++20 -stdpar=gpu -cudalib=cublas -gpu=managed,fastmath,fma --experimental-stdpar")
 
 
 # Add executable
-add_executable(lbm lbm.cpp)
+add_executable(lbm lbm.cpp
+        statistics.h)
 
 # Link MPI
 target_include_directories(lbm PRIVATE ${MPI_CXX_INCLUDE_PATH})
