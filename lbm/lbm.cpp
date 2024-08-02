@@ -17,6 +17,7 @@
 // Define a type alias for convenience
 using T = float;
 namespace exper = std::experimental;
+using layout = exper::layout_right;
 
 
 // Function to write VTK file for 2D data
@@ -69,8 +70,8 @@ struct Grid {
   T invCslb2 = invCslb * invCslb;
 
   std::vector<T> buffer;
-  exper::mdspan<T, exper::dextents<int,3>> f_data, f_data_2;
-  exper::mdspan<T, exper::dextents<int,2>> u_data, v_data, rho_data;
+  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2;
+  exper::mdspan<T, exper::dextents<int,2>,layout> u_data, v_data, rho_data;
 
   Grid(int nx, int ny) : nx(nx), ny(ny),
                          buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
@@ -78,11 +79,11 @@ struct Grid {
     int total_cells = nx * ny;
     int f_data_size = total_cells * 9;
 
-    f_data = exper::mdspan<T, exper::dextents<int,3>>(buffer.data(), nx, ny, 9);
-    f_data_2 = exper::mdspan<T, exper::dextents<int,3>>(buffer.data() + f_data_size, nx, ny, 9);
-    u_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2, nx, ny);
-    v_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2 + total_cells, nx, ny);
-    rho_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2 + total_cells * 2, nx, ny);
+    f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, 9);
+    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data_size, nx, ny, 9);
+    u_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2, nx, ny);
+    v_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2 + total_cells, nx, ny);
+    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2 + total_cells * 2, nx, ny);
 
     initialize();
   }
