@@ -11,10 +11,13 @@
 #include <string>
 #include <memory> // For std::unique_ptr and std::make_unique
 #include <chrono>
+#include <experimental/mdspan> // Include standard mdspan header
 #include "statistics.h"
 
 // Define a type alias for convenience
 using T = float;
+namespace exper = std::experimental;
+
 
 // Function to write VTK file for 2D data
 template<typename T1, typename T2>
@@ -66,7 +69,8 @@ struct Grid {
   T invCslb2 = invCslb * invCslb;
 
   std::vector<T> buffer;
-  std::span<T> f_data, f_data_2, u_data, v_data, rho_data;
+  exper::mdspan<T, exper::dextents<int,3>> f_data, f_data_2;
+  exper::mdspan<T, exper::dextents<int,2>> u_data, v_data, rho_data;
 
   Grid(int nx, int ny) : nx(nx), ny(ny),
                          buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
@@ -74,25 +78,17 @@ struct Grid {
     int total_cells = nx * ny;
     int f_data_size = total_cells * 9;
 
-    f_data = std::span<T>(buffer.data(), f_data_size);
-    f_data_2 = std::span<T>(buffer.data() + f_data_size, f_data_size);
-    u_data = std::span<T>(buffer.data() + f_data_size * 2, total_cells);
-    v_data = std::span<T>(buffer.data() + f_data_size * 2 + total_cells, total_cells);
-    rho_data = std::span<T>(buffer.data() + f_data_size * 2 + total_cells * 2, total_cells);
+    f_data = exper::mdspan<T, exper::dextents<int,3>>(buffer.data(), nx, ny, 9);
+    f_data_2 = exper::mdspan<T, exper::dextents<int,3>>(buffer.data() + f_data_size, nx, ny, 9);
+    u_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2, nx, ny);
+    v_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2 + total_cells, nx, ny);
+    rho_data = exper::mdspan<T, exper::dextents<int,2>>(buffer.data() + f_data_size * 2 + total_cells * 2, nx, ny);
 
     initialize();
   }
 
   void swap() {
     std::swap(f_data, f_data_2);
-  }
-
-  int index(int x, int y, int i) const {
-    return i * nx * ny + x * ny + y;
-  }
-
-  int index2d(int x, int y) const {
-    return x * ny + y;
   }
 
   int oppositeIndex(int i) const {
@@ -106,31 +102,19 @@ struct Grid {
         T rho_val = 1.0;
         T ux = 0.0;
         T uy = 0.0;
-        int idx2d = index2d(x, y);
-        rho_data[idx2d] = rho_val;
-        u_data[idx2d] = ux;
-        v_data[idx2d] = uy;
+        rho_data(x, y) = rho_val;
+        u_data(x, y) = ux;
+        v_data(x, y) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          f_data[index(x, y, i)] = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
-          f_data_2[index(x, y, i)] = f_data[index(x, y, i)]; // Initialize f_2 the same way as f
+          f_data(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
+          f_data_2(x, y, i) = f_data(x, y, i); // Initialize f_2 the same way as f
         }
       }
     }
   }
 };
-
-//T computeTotalEnergy(Grid &g) const {
-//  auto xs = std::views::iota(0, g.nx - 1);
-//  auto ys = std::views::iota(0, g.ny - 1);
-//  auto ids = cartesian_product(xs, ys);
-//  double energy = std::transform_reduce(std::execution::par, begin(ids), end(ids), 0., std::plus{}, [=](auto idx) {
-//    auto [x, y] = idx;
-//    return g.u_data[g.index2d(x, y)] * g.u_data[g.index2d(x, y)] + g.v_data[g.index2d(x, y)] * g.v_data[g.index2d(x, y)];
-//  });
-//  return energy;
-//}
 
 // Compute the moments of populations to populate density and velocity vectors in Grid
 void computeMoments(Grid &g, bool even, bool before_cs) {
@@ -145,13 +129,13 @@ void computeMoments(Grid &g, bool even, bool before_cs) {
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       int iPop = even ? i : g.oppositeIndex(i);
-      rho += g.f_data[g.index(x, y, iPop)];
-      ux += g.f_data[g.index(x, y, iPop)] * g.cx[i];
-      uy += g.f_data[g.index(x, y, iPop)] * g.cy[i];
+      rho += g.f_data(x, y, iPop);
+      ux += g.f_data(x, y, iPop) * g.cx[i];
+      uy += g.f_data(x, y, iPop) * g.cy[i];
     }
-    g.rho_data[g.index2d(x, y)] = rho;
-    g.u_data[g.index2d(x, y)] = ux / rho;
-    g.v_data[g.index2d(x, y)] = uy / rho;
+    g.rho_data(x, y) = rho;
+    g.u_data(x, y) = ux / rho;
+    g.v_data(x, y) = uy / rho;
   });
 }
 
@@ -170,7 +154,7 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
     std::array<T, 9> feq{0};
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      tmpf[i] = g.f_data[g.index(x, y, i)];
+      tmpf[i] = g.f_data(x, y, i);
       rho += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
@@ -193,13 +177,13 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
 
       // Handle periodic and bounce-back boundary conditions
       if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-        g.f_data_2[g.index(x_stream, y_stream, i)] = tmpf[i];
+        g.f_data_2(x_stream, y_stream, i) = tmpf[i];
       } else {
-        g.f_data_2[g.index(x, y, g.oppositeIndex(i))] = tmpf[i];
+        g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i];
 
         // Add lid-driven momentum for the moving top wall
         if (y_stream == g.ny) {
-          g.f_data_2[g.index(x, y, g.oppositeIndex(i))] -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
+          g.f_data_2(x, y, g.oppositeIndex(i)) -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
         }
       }
     }
@@ -226,12 +210,12 @@ void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
       int y_stream = y - g.cy[i];
       if (even) {// pull stream
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          tmpf[i] = g.f_data[g.index(x_stream, y_stream, i)];
+          tmpf[i] = g.f_data(x_stream, y_stream, i);
         } else {
-          tmpf[i] = g.f_data[g.index(x, y, g.oppositeIndex(i))] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+          tmpf[i] = g.f_data(x, y, g.oppositeIndex(i)) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
         }
       } else { // odd
-        tmpf[i] = g.f_data[g.index(x, y, g.oppositeIndex(i))];// read-swap
+        tmpf[i] = g.f_data(x, y, g.oppositeIndex(i));// read-swap
       }
       rho += tmpf[i];
       ux += tmpf[i] * g.cx[i];
@@ -252,12 +236,12 @@ void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
       int y_stream = y + g.cy[i];
       if (even) {//push-swap
         if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          g.f_data[g.index(x_stream, y_stream, g.oppositeIndex(i))] = tmpf[i];
+          g.f_data(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
         } else {
-          g.f_data[g.index(x, y, i)] = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+          g.f_data(x, y, i) = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
         }
       } else { // odd
-        g.f_data[g.index(x, y, i)] = tmpf[i];
+        g.f_data(x, y, i) = tmpf[i];
       }
     }
   });
@@ -307,7 +291,6 @@ int main() {
 
       for (int x = 0; x < nx; ++x) {
         for (int y = 0; y < ny; ++y) {
-          int idx2d = g->index2d(x, y);
           int idx3d = (x * ny + y) * 3;
 
           // Coordinates for each grid point (assuming a uniform grid, z=0 for 2D)
@@ -316,8 +299,8 @@ int main() {
           grid_points[idx3d + 2] = 0;
 
           // Velocity
-          macroscopic_data[idx3d + 0] = g->u_data[idx2d];
-          macroscopic_data[idx3d + 1] = g->v_data[idx2d];
+          macroscopic_data[idx3d + 0] = g->u_data(x, y);
+          macroscopic_data[idx3d + 1] = g->v_data(x, y);
           macroscopic_data[idx3d + 2] = 0; // z component of velocity is zero for 2D
         }
       }
