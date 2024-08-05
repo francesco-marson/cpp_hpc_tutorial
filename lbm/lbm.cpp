@@ -250,23 +250,27 @@ void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
   });
 }
 // Initialize function for double shear layer
-void initializeDoubleShearLayer(Grid &g, T ulb) {
+// Initialize function for double shear layer
+template <typename T>
+void initializeDoubleShearLayer(Grid &g, T U0, T alpha=80, T delta=0.05) {
   int nx = g.nx;
   int ny = g.ny;
+  T L = nx;
+
   // Initialize density and velocity fields
   for (int x = 0; x < nx; ++x) {
     for (int y = 0; y < ny; ++y) {
-
       T rho_val = 1.0;
+
       // Define velocities based on the double shear layer profile
-      T ux = ulb * sin(2.0 * M_PI * y / ny);
-      T uy = ulb * sin(2.0 * M_PI * x / nx);
+      T ux = U0 * std::tanh(alpha * (0.25 - std::abs((static_cast<T>(y) / static_cast<T>(ny)) - 0.5)));
+      T uy = U0 * delta * std::sin(2.0 * M_PI * (static_cast<T>(x) / static_cast<T>(nx) + 0.25));
 
       g.rho_data(x, y) = rho_val;
       g.u_data(x, y) = ux;
       g.v_data(x, y) = uy;
 
-      // Initialize populations based on equilibrium distribution
+      // Initialize populations based on the equilibrium distribution
       for (int i = 0; i < 9; ++i) {
         T cu = g.cx[i] * ux + g.cy[i] * uy;
         T u_sq = 1.5 * (ux * ux + uy * uy);
@@ -277,10 +281,11 @@ void initializeDoubleShearLayer(Grid &g, T ulb) {
   }
 }
 
+
 int main() {
   // Grid parameters
-  int nx = 100;
-  int ny = 100;
+  int nx = 256;
+  int ny = 256;
 
   // Setup grid and initial conditions
   auto g = std::make_unique<Grid>(nx, ny);
