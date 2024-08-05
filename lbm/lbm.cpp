@@ -64,6 +64,10 @@ struct Grid {
   T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
   std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  // Precomputed indices for 90° rotations
+  // index =                                      {0, 1, 2, 3, 4, 5, 6, 7, 8};
+  std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
+  std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
   T cslb = 1. / sqrt(3.);
   T cslb2 = cslb * cslb;
   T invCslb = 1. / cslb;
@@ -140,6 +144,27 @@ void computeMoments(Grid &g, bool even, bool before_cs) {
   });
 }
 
+enum BCtype {periodicity, outflow, bb, symmetry, inflow};
+
+auto flat_plane_configuration(int x_stream, int y_stream, int nx, int ny, BCtype bc_type){
+  switch (bc_type) {
+  case symmetry:
+    return (y_stream == -1) and (x_stream < nx/3);
+    break;
+  case bb:
+    return (y_stream == -1) and (x_stream > nx/3);
+    break;
+  case inflow:
+    return (x_stream == -1);
+    break;
+  case outflow:
+    return (x_stream == nx) or (y_stream == ny);
+    break;
+  default:
+    return false;
+  }
+}
+
 template<int truncation_level>
 void collide_stream_two_populations(Grid &g, T ulb, T tau) {
   T omega = 1.0 / tau;
@@ -180,75 +205,77 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
       int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
       // Handle periodic and bounce-back boundary conditions
-      if (true/*x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny*/) {
-        g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
-      } else {
+      if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, bb)) {
         g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i];
-        // Add lid-driven momentum for the moving top wall
-        if (y_stream == g.ny) {
-          g.f_data_2(x, y, g.oppositeIndex(i)) -= 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
-        }
+      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, inflow)) {
+        g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i] - 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
+      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, outflow)) {
+        //do nothing
+      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, symmetry)) {
+        g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[g.oppositeIndex(i)] : g.anticlockwise_90[g.oppositeIndex(i)]) = tmpf[i];
+      } else { // periodic
+        g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       }
     }
   });
   g.swap();
 }
 
-template<int truncation_level>
-void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
-  T omega = 1.0 / tau;
-
-  auto xs = std::views::iota(0, g.nx);
-  auto ys = std::views::iota(0, g.ny);
-  auto ids = std::views::cartesian_product(xs, ys);
-
-  std::for_each(std::execution::seq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
-    auto [x, y] = idx;
-
-    std::array<T, 9> tmpf{0};
-    std::array<T, 9> feq{0};
-    T rho = 0.0, ux = 0.0, uy = 0.0;
-    for (int i = 0; i < 9; ++i) {
-      int x_stream = x - g.cx[i];
-      int y_stream = y - g.cy[i];
-      if (even) {// pull stream
-        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          tmpf[i] = g.f_data(x_stream, y_stream, i);
-        } else {
-          tmpf[i] = g.f_data(x, y, g.oppositeIndex(i)) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
-        }
-      } else { // odd
-        tmpf[i] = g.f_data(x, y, g.oppositeIndex(i));// read-swap
-      }
-      rho += tmpf[i];
-      ux += tmpf[i] * g.cx[i];
-      uy += tmpf[i] * g.cy[i];
-    }
-
-    // Compute macroscopic density and velocities
-    ux /= rho;
-    uy /= rho;
-
-    for (int i = 0; i < 9; ++i) {
-      T cu = g.cx[i] * ux + g.cy[i] * uy;
-      T u_sq = ux * ux + uy * uy;
-      T cu_sq = cu * cu;
-      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
-      tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
-      int x_stream = x + g.cx[i];
-      int y_stream = y + g.cy[i];
-      if (even) {//push-swap
-        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-          g.f_data(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
-        } else {
-          g.f_data(x, y, i) = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
-        }
-      } else { // odd
-        g.f_data(x, y, i) = tmpf[i];
-      }
-    }
-  });
-}
+//template<int truncation_level>
+//void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
+//  T omega = 1.0 / tau;
+//
+//  auto xs = std::views::iota(0, g.nx);
+//  auto ys = std::views::iota(0, g.ny);
+//  auto ids = std::views::cartesian_product(xs, ys);
+//
+//  std::for_each(std::execution::seq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
+//    auto [x, y] = idx;
+//
+//    std::array<T, 9> tmpf{0};
+//    std::array<T, 9> feq{0};
+//    T rho = 0.0, ux = 0.0, uy = 0.0;
+//    for (int i = 0; i < 9; ++i) {
+//      int x_stream = x - g.cx[i];
+//      int y_stream = y - g.cy[i];
+//      if (even) {// pull stream
+//        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
+//          tmpf[i] = g.f_data(x_stream, y_stream, i);
+//        } else {
+//          tmpf[i] = g.f_data(x, y, g.oppositeIndex(i)) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+//        }
+//      } else { // odd
+//        tmpf[i] = g.f_data(x, y, g.oppositeIndex(i));// read-swap
+//      }
+//      rho += tmpf[i];
+//      ux += tmpf[i] * g.cx[i];
+//      uy += tmpf[i] * g.cy[i];
+//    }
+//
+//    // Compute macroscopic density and velocities
+//    ux /= rho;
+//    uy /= rho;
+//
+//    for (int i = 0; i < 9; ++i) {
+//      T cu = g.cx[i] * ux + g.cy[i] * uy;
+//      T u_sq = ux * ux + uy * uy;
+//      T cu_sq = cu * cu;
+//      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
+//      tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
+//      int x_stream = x + g.cx[i];
+//      int y_stream = y + g.cy[i];
+//      if (even) {//push-swap
+//        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
+//          g.f_data(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
+//        } else {
+//          g.f_data(x, y, i) = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+//        }
+//      } else { // odd
+//        g.f_data(x, y, i) = tmpf[i];
+//      }
+//    }
+//  });
+//}
 // Initialize function for double shear layer
 // Initialize function for double shear layer
 template <typename T>
@@ -302,14 +329,14 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 10 * Tlb;
+  int num_steps = Tlb;
   int outputIter = num_steps / 20;
 
   printf("T_lb = %f\n", Tlb);
 
 
   // Initialize the grid with the double shear layer
-  initializeDoubleShearLayer(*g, ulb);
+//  initializeDoubleShearLayer(*g, ulb);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -352,6 +379,14 @@ int main() {
       output_time += after_out - before_out;
     }
     collide_stream_two_populations<truncation_level>(*g, ulb, tau);
+      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
+      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
+      lastx = beforelastx;
+      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
+      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
+//      lasty = beforelasty;
+//      lastx = beforelastx;
+//      auto last = exper::submdspan(*g.f_data, nx-1, exper::full_extent, exper::full_extent);
   }
 
   // End time measurement
