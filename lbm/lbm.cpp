@@ -221,6 +221,19 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
   g.swap();
 }
 
+//void loop_xy(Grid &g, T ulb, T tau) {
+//  T omega = 1.0 / tau;
+//
+//  auto xs = std::views::iota(0, g.nx);
+//  auto ys = std::views::iota(0, g.ny);
+//  auto ids = std::views::cartesian_product(xs, ys);
+//
+//  // Parallel loop ensuring thread safety
+//  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb](auto idx) {
+//    auto [x, y] = idx;
+//  });
+//}
+
 //template<int truncation_level>
 //void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
 //  T omega = 1.0 / tau;
@@ -379,11 +392,27 @@ int main() {
       output_time += after_out - before_out;
     }
     collide_stream_two_populations<truncation_level>(*g, ulb, tau);
-      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
-      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
-      lastx = beforelastx;
-      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
-      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
+
+//      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
+//      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
+//      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
+//      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
+        auto xs = std::views::iota(0, g->nx);
+        auto ys = std::views::iota(0, g->ny);
+        auto is = std::views::iota(0, 9);
+        auto xis = std::views::cartesian_product(xs, is);
+        auto yis = std::views::cartesian_product(ys, is);
+
+
+        // Parallel loop ensuring thread safety
+        std::for_each(std::execution::par_unseq, yis.begin(), yis.end(), [f=g->f_data,nx,ny](auto yi) {
+          auto [y, i] = yi;
+          f(nx-1,y,i) = f(nx-2,y,i);
+        });
+        std::for_each(std::execution::par_unseq, xis.begin(), xis.end(), [f=g->f_data,nx,ny](auto xi) {
+          auto [x, i] = xi;
+          f(x,ny-1,i) = f(x,ny-2,i);
+        });
 //      lasty = beforelasty;
 //      lastx = beforelastx;
 //      auto last = exper::submdspan(*g.f_data, nx-1, exper::full_extent, exper::full_extent);
