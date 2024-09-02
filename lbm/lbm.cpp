@@ -61,6 +61,7 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
 // Data structure for the D2Q9lattice
 struct D2Q9lattice {
   int nx, ny;
+  const T llb;
   const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   const std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
   const std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
@@ -80,7 +81,7 @@ struct D2Q9lattice {
   exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2;
   exper::mdspan<T, exper::dextents<int,2>,layout> u_data, v_data, rho_data;
 
-  D2Q9lattice(int nx, int ny) : nx(nx), ny(ny),
+  D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
                          buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
   {
     int total_cells = nx * ny;
@@ -124,14 +125,14 @@ struct D2Q9lattice {
 };
 
 // Compute the moments of populations to populate density and velocity vectors in D2Q9lattice
-void computeMoments(D2Q9lattice &g, bool even, bool before_cs) {
+void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   assert(before_cs);
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
   auto coords = std::views::cartesian_product(xs, ys);
 
   // Parallel loop to compute moments
-  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, before_cs, even](auto coord) {
+  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, even](auto coord) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
@@ -167,6 +168,33 @@ auto flat_plane_configuration(int x_stream, int y_stream, int nx, int ny, BCtype
   }
 }
 
+// cylinder
+bool cylinder_configuration(int x_stream, int y_stream, int nx, int ny, T Rsquared, BCtype bc_type){
+  // Calculate the center coordinates of the circle
+  T x_center = nx / 3+1e-4;
+  T y_center = ny / 2 + 1e-4;
+
+  // Calculate the distance from the point to the center of the circle
+  T distance_squared = std::pow(x_stream - x_center, 2) + std::pow(y_stream - y_center, 2);
+
+  // Check if the distance is less than or equal to the radius squared
+  bool inside_circle = distance_squared <= Rsquared;
+
+  switch (bc_type) {
+  case bb:
+    return inside_circle;
+    break;
+  case inflow:
+    return (x_stream == -1);
+    break;
+  case outflow:
+    return (x_stream == nx) /*or (y_stream == ny) or (y_stream == -1)*/;
+    break;
+  default:
+    return false;
+  }
+}
+
 void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
@@ -174,8 +202,10 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   auto ys = std::views::iota(0, g.ny);
   auto ids = std::views::cartesian_product(xs, ys);
 
+  T Rsquared = g.llb*g.llb;
+
   // Parallel loop ensuring thread safety
-  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb](auto idx) {
+  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb,Rsquared](auto idx) {
     auto [x, y] = idx;
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
@@ -206,15 +236,15 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
       // Handle periodic and bounce-back boundary conditions
-      if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, bb)) {
+      if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, bb)) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
-      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, inflow)) {
-        g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
-      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, outflow)) {
+      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, inflow)) {
+        g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
+      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, outflow)) {
         //do nothing
-      } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, symmetry)) {
-        if (g.cx[i] not_eq 0) g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[i] : g.anticlockwise_90[i]) = tmpf[i];
-        else g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
+//      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, symmetry)) {
+//        if (g.cx[i] not_eq 0) g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[i] : g.anticlockwise_90[i]) = tmpf[i];
+//        else g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
       } else { // periodic
         g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       }
@@ -315,11 +345,12 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 1000;
-  int ny = 1000;
+  int nx = 200;
+  int ny = 200;
+  T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q9lattice>(nx, ny);
+  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
 
   // indexes
   auto xs = std::views::iota(0, g->nx);
@@ -329,23 +360,24 @@ int main() {
   auto yis = std::views::cartesian_product(ys, is);
 
   // nondimentional numbers
-  T Re = 1000;
+  T Re =100;
   T Ma = 0.1;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
-  T nu = ulb * g->nx / Re;
+  T nu = ulb * llb / Re;
   T taubar = nu * g->invCslb2;
   T tau = taubar + 0.5;
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = Tlb;
-  int outputIter = num_steps / 20;
+  int num_steps = 200;Tlb;
+  int outputIter = 1;num_steps / 100;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
+  printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
 
   // Initialize the D2Q9lattice with the double shear layer
@@ -367,7 +399,7 @@ int main() {
     // Output results every outputIter iterations
     if (t % outputIter == 0) {
       // Compute macroscopic variables using the new function
-      computeMoments(*g, true, true); // Dereference the unique_ptr to pass the reference.
+      computeMoments(*g); // Dereference the unique_ptr to pass the reference.
       std::vector<T> grid_points((nx * ny) * 3);
       std::vector<T> macroscopic_data((nx * ny) * 3);
 
@@ -397,17 +429,17 @@ int main() {
 
     collide_stream_two_populations(*g, ulb, tau);
 
-    // Parallel loop ensuring thread safety
     std::for_each(std::execution::par_unseq, yis.begin(), yis.end(),
                   [f = g->f_data, nx, ny](auto yi) {
                     auto [y, i] = yi;
                     f(nx - 1, y, i) = f(nx - 2, y, i);
                   });
-    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
-                  [f = g->f_data, nx, ny](auto xi) {
-                    auto [x, i] = xi;
-                    f(x, ny - 1, i) = f(x, ny - 2, i);
-                  });
+//    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
+//                  [f = g->f_data, nx, ny](auto xi) {
+//                    auto [x, i] = xi;
+//                    f(x, ny - 1, i) = f(x, ny - 2, i);
+//                    f(x, 0, i) = f(x, 1, i);
+//                  });
   }
 
   // End time measurement
