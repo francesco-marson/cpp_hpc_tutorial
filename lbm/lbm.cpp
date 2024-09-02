@@ -17,7 +17,7 @@
 // Define a type alias for convenience
 using T = float;
 namespace exper = std::experimental;
-using layout = exper::layout_right;
+using layout = exper::layout_left;
 
 
 // Function to write VTK file for 2D data
@@ -58,16 +58,19 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
   out.close(); // Close the file
 }
 
-// Data structure for the grid
-struct Grid {
+// Data structure for the D2Q9lattice
+struct D2Q9lattice {
   int nx, ny;
-  T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
-  std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
-  std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
+  const std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
+  const std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  const int d = 2;
+  const int q = 9;
+  const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
   // Precomputed indices for 90° rotations
   // index =                                      {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
-  std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
+  const std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
+  const std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
   T cslb = 1. / sqrt(3.);
   T cslb2 = cslb * cslb;
   T invCslb = 1. / cslb;
@@ -77,7 +80,7 @@ struct Grid {
   exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2;
   exper::mdspan<T, exper::dextents<int,2>,layout> u_data, v_data, rho_data;
 
-  Grid(int nx, int ny) : nx(nx), ny(ny),
+  D2Q9lattice(int nx, int ny) : nx(nx), ny(ny),
                          buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
   {
     int total_cells = nx * ny;
@@ -96,8 +99,7 @@ struct Grid {
     std::swap(f_data, f_data_2);
   }
 
-  int oppositeIndex(int i) const {
-    const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
+  inline int oppositeIndex(int i) const {
     return opposite[i];
   }
 
@@ -121,8 +123,8 @@ struct Grid {
   }
 };
 
-// Compute the moments of populations to populate density and velocity vectors in Grid
-void computeMoments(Grid &g, bool even, bool before_cs) {
+// Compute the moments of populations to populate density and velocity vectors in D2Q9lattice
+void computeMoments(D2Q9lattice &g, bool even, bool before_cs) {
   assert(before_cs);
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
@@ -133,7 +135,7 @@ void computeMoments(Grid &g, bool even, bool before_cs) {
     auto [x, y] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      int iPop = even ? i : g.oppositeIndex(i);
+      int iPop = even ? i : g.opposite[i];
       rho += g.f_data(x, y, iPop);
       ux += g.f_data(x, y, iPop) * g.cx[i];
       uy += g.f_data(x, y, iPop) * g.cy[i];
@@ -165,8 +167,7 @@ auto flat_plane_configuration(int x_stream, int y_stream, int nx, int ny, BCtype
   }
 }
 
-template<int truncation_level>
-void collide_stream_two_populations(Grid &g, T ulb, T tau) {
+void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
   auto xs = std::views::iota(0, g.nx);
@@ -206,13 +207,14 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
 
       // Handle periodic and bounce-back boundary conditions
       if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, bb)) {
-        g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i];
+        g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
       } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, inflow)) {
-        g.f_data_2(x, y, g.oppositeIndex(i)) = tmpf[i] - 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
+        g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * ulb * g.cx[i] * g.w[i];
       } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, outflow)) {
         //do nothing
       } else if (flat_plane_configuration(x_stream, y_stream, g.nx, g.ny, symmetry)) {
-        g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[g.oppositeIndex(i)] : g.anticlockwise_90[g.oppositeIndex(i)]) = tmpf[i];
+        if (g.cx[i] not_eq 0) g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[i] : g.anticlockwise_90[i]) = tmpf[i];
+        else g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
       } else { // periodic
         g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       }
@@ -221,21 +223,8 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
   g.swap();
 }
 
-//void loop_xy(Grid &g, T ulb, T tau) {
-//  T omega = 1.0 / tau;
-//
-//  auto xs = std::views::iota(0, g.nx);
-//  auto ys = std::views::iota(0, g.ny);
-//  auto ids = std::views::cartesian_product(xs, ys);
-//
-//  // Parallel loop ensuring thread safety
-//  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb](auto idx) {
-//    auto [x, y] = idx;
-//  });
-//}
-
 //template<int truncation_level>
-//void collide_stream_AA(Grid &g, bool even, T ulb, T tau) {
+//void collide_stream_AA(D2Q9lattice &g, bool even, T ulb, T tau) {
 //  T omega = 1.0 / tau;
 //
 //  auto xs = std::views::iota(0, g.nx);
@@ -255,10 +244,10 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
 //        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
 //          tmpf[i] = g.f_data(x_stream, y_stream, i);
 //        } else {
-//          tmpf[i] = g.f_data(x, y, g.oppositeIndex(i)) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
+//          tmpf[i] = g.f_data(x, y, g.opposite[i]) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
 //        }
 //      } else { // odd
-//        tmpf[i] = g.f_data(x, y, g.oppositeIndex(i));// read-swap
+//        tmpf[i] = g.f_data(x, y, g.opposite[i]);// read-swap
 //      }
 //      rho += tmpf[i];
 //      ux += tmpf[i] * g.cx[i];
@@ -279,7 +268,7 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
 //      int y_stream = y + g.cy[i];
 //      if (even) {//push-swap
 //        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-//          g.f_data(x_stream, y_stream, g.oppositeIndex(i)) = tmpf[i];
+//          g.f_data(x_stream, y_stream, g.opposite[i]) = tmpf[i];
 //        } else {
 //          g.f_data(x, y, i) = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
 //        }
@@ -292,7 +281,7 @@ void collide_stream_two_populations(Grid &g, T ulb, T tau) {
 // Initialize function for double shear layer
 // Initialize function for double shear layer
 template <typename T>
-void initializeDoubleShearLayer(Grid &g, T U0, T alpha=80, T delta=0.05) {
+void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) {
   int nx = g.nx;
   int ny = g.ny;
   T L = nx;
@@ -323,18 +312,27 @@ void initializeDoubleShearLayer(Grid &g, T U0, T alpha=80, T delta=0.05) {
 
 
 int main() {
-  // Grid parameters
-  int nx = 256;
-  int ny = 256;
+  int warm_up_iter = 1000;
 
-  // Setup grid and initial conditions
-  auto g = std::make_unique<Grid>(nx, ny);
+  // numerical resolution
+  int nx = 1000;
+  int ny = 1000;
 
-  constexpr int truncation_level = 2; // Level of polynomial truncation for equilibrium
+  // Setup D2Q9lattice and initial conditions
+  auto g = std::make_unique<D2Q9lattice>(nx, ny);
 
+  // indexes
+  auto xs = std::views::iota(0, g->nx);
+  auto ys = std::views::iota(0, g->ny);
+  auto is = std::views::iota(0, g->q);
+  auto xis = std::views::cartesian_product(xs, is);
+  auto yis = std::views::cartesian_product(ys, is);
+
+  // nondimentional numbers
   T Re = 1000;
   T Ma = 0.1;
 
+  // reference dimensions
   T ulb = Ma * g->cslb;
   T nu = ulb * g->nx / Re;
   T taubar = nu * g->invCslb2;
@@ -346,20 +344,25 @@ int main() {
   int outputIter = num_steps / 20;
 
   printf("T_lb = %f\n", Tlb);
+  printf("num_steps = %d\n", num_steps);
+  printf("warm_up_iter = %d\n", warm_up_iter);
 
 
-  // Initialize the grid with the double shear layer
+  // Initialize the D2Q9lattice with the double shear layer
 //  initializeDoubleShearLayer(*g, ulb);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> output_time;
+  std::chrono::duration<double> output_time(0.0);
 
   // Loop over time steps
   for (int t = 0; t < num_steps; ++t) {
 
+    if (t == warm_up_iter)
+      start_time = std::chrono::high_resolution_clock::now();
+
     // Toggle between different streaming steps
-    bool even = (t % 2 == 0);
+    //    bool even = (t % 2 == 0);
 
     // Output results every outputIter iterations
     if (t % outputIter == 0) {
@@ -391,31 +394,20 @@ int main() {
 
       output_time += after_out - before_out;
     }
-    collide_stream_two_populations<truncation_level>(*g, ulb, tau);
 
-//      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
-//      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
-//      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
-//      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
-        auto xs = std::views::iota(0, g->nx);
-        auto ys = std::views::iota(0, g->ny);
-        auto is = std::views::iota(0, 9);
-        auto xis = std::views::cartesian_product(xs, is);
-        auto yis = std::views::cartesian_product(ys, is);
+    collide_stream_two_populations(*g, ulb, tau);
 
-
-        // Parallel loop ensuring thread safety
-        std::for_each(std::execution::par_unseq, yis.begin(), yis.end(), [f=g->f_data,nx,ny](auto yi) {
-          auto [y, i] = yi;
-          f(nx-1,y,i) = f(nx-2,y,i);
-        });
-        std::for_each(std::execution::par_unseq, xis.begin(), xis.end(), [f=g->f_data,nx,ny](auto xi) {
-          auto [x, i] = xi;
-          f(x,ny-1,i) = f(x,ny-2,i);
-        });
-//      lasty = beforelasty;
-//      lastx = beforelastx;
-//      auto last = exper::submdspan(*g.f_data, nx-1, exper::full_extent, exper::full_extent);
+    // Parallel loop ensuring thread safety
+    std::for_each(std::execution::par_unseq, yis.begin(), yis.end(),
+                  [f = g->f_data, nx, ny](auto yi) {
+                    auto [y, i] = yi;
+                    f(nx - 1, y, i) = f(nx - 2, y, i);
+                  });
+    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
+                  [f = g->f_data, nx, ny](auto xi) {
+                    auto [x, i] = xi;
+                    f(x, ny - 1, i) = f(x, ny - 2, i);
+                  });
   }
 
   // End time measurement
@@ -423,7 +415,7 @@ int main() {
   std::chrono::duration<double> elapsed = end_time - start_time - output_time;
 
   // Compute performance in MLUP/s
-  long total_lattice_updates = static_cast<long>(nx) * static_cast<long>(ny) * static_cast<long>(num_steps);
+  long total_lattice_updates = static_cast<long>(nx) * static_cast<long>(ny) * static_cast<long>(num_steps-warm_up_iter);
   double mlups = total_lattice_updates / (elapsed.count() * 1.0e6);
 
   // Print performance
@@ -431,3 +423,8 @@ int main() {
 
   return 0;
 }
+
+//      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
+//      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
+//      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
+//      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
