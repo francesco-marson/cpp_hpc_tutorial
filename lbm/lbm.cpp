@@ -58,6 +58,7 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
   out.close(); // Close the file
 }
 
+enum class Flags{hwbb,inlet,outlet,symmetry};
 // Data structure for the D2Q9lattice
 struct D2Q9lattice {
   int nx, ny;
@@ -78,20 +79,21 @@ struct D2Q9lattice {
   T invCslb2 = invCslb * invCslb;
 
   std::vector<T> buffer;
-  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2;
+  std::vector<Flags> flags_buffer;
+  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data;
   exper::mdspan<T, exper::dextents<int,2>,layout> u_data, v_data, rho_data;
+  exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
 
-  D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
-                         buffer(nx * ny * 9 * 2 + nx * ny * 3, 1.0) // Adjust buffer size accordingly
+  D2Q9lattice(int nx, int ny, T llb, int number_dynamic_scalars = 1) : nx(nx), ny(ny), llb(llb),
+                         buffer(nx * ny * 9 * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0) // Adjust buffer size accordingly
   {
-    int total_cells = nx * ny;
-    int f_data_size = total_cells * 9;
-
     f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, 9);
-    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data_size, nx, ny, 9);
-    u_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2, nx, ny);
-    v_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2 + total_cells, nx, ny);
-    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data_size * 2 + total_cells * 2, nx, ny);
+    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, 9);
+    u_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny);
+    v_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size(), nx, ny);
+    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size() + v_data.size(), nx, ny);
+    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size() + v_data.size()+ rho_data.size(), nx, ny,number_dynamic_scalars);
+    flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,9);
 
     initialize();
   }
@@ -147,52 +149,82 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   });
 }
 
-enum BCtype {periodicity, outflow, bb, symmetry, inflow};
 
-auto flat_plane_configuration(int x_stream, int y_stream, int nx, int ny, BCtype bc_type){
-  switch (bc_type) {
-  case symmetry:
-    return (y_stream == -1) and (x_stream < nx/3);
-    break;
-  case bb:
-    return (y_stream == -1) and (x_stream > nx/3);
-    break;
-  case inflow:
-    return (x_stream == -1);
-    break;
-  case outflow:
-    return (x_stream == nx) or (y_stream == ny);
-    break;
-  default:
-    return false;
-  }
-}
+auto cylinder_flags_initialization(D2Q9lattice& g){
+  // indexes
+  auto xs = std::views::iota(0, g.nx);
+  auto ys = std::views::iota(0, g.ny);
+  auto is = std::views::iota(0, g.q);
+  auto xis = std::views::cartesian_product(xs, is);
+  auto yis = std::views::cartesian_product(ys, is);
+  auto xyis = std::views::cartesian_product(xs,ys, is);
 
-// cylinder
-bool cylinder_configuration(int x_stream, int y_stream, int nx, int ny, T Rsquared, BCtype bc_type){
-  // Calculate the center coordinates of the circle
-  T x_center = nx / 3+1e-4;
-  T y_center = ny / 2 + 1e-4;
 
-  // Calculate the distance from the point to the center of the circle
-  T distance_squared = std::pow(x_stream - x_center, 2) + std::pow(y_stream - y_center, 2);
 
-  // Check if the distance is less than or equal to the radius squared
-  bool inside_circle = distance_squared <= Rsquared;
+  T cx = g.nx/3.;
+  T cy = g.ny/2.;
+  T radius = g.ny/10.;
 
-  switch (bc_type) {
-  case bb:
-    return inside_circle;
-    break;
-  case inflow:
-    return (x_stream == -1);
-    break;
-  case outflow:
-    return (x_stream == nx) /*or (y_stream == ny) or (y_stream == -1)*/;
-    break;
-  default:
-    return false;
-  }
+  auto getMinimumPositive = [](const std::array<T, 2>& p) -> std::optional<T> {
+    std::optional<T> minimumPositive;
+
+    if (p[0] > 0) {
+      minimumPositive = p[0];
+    }
+
+    if (p[1] > 0) {
+      if (minimumPositive) {
+        minimumPositive = std::min(minimumPositive.value(), p[1]);
+      } else {
+        minimumPositive = p[1];
+      }
+    }
+
+    return minimumPositive;
+  };
+
+
+  auto circle_intersect_segment = [cx, cy, radius](T x1, T y1, T x2, T y2)-> std::array<T, 2>{
+    T dx = x2 - x1;
+    T dy = y2 - y1;
+
+    T fx = x1 - cx;
+    T fy = y1 - cy;
+
+    T a = dx * dx + dy * dy;
+    T b = 2 * (fx * dx + fy * dy);
+    T c = fx * fx + fy * fy - radius * radius;
+
+    T discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0)
+      return std::array<T, 2>{NAN, NAN};
+
+    discriminant = std::sqrt(discriminant);
+
+    T t1 = (-b - discriminant) / (2 * a);
+    T t2 = (-b + discriminant) / (2 * a);
+
+    return std::array<T, 2>{t1, t2};
+  };
+
+    auto is_near = [cx,cy,radius](int x, int y){
+      if ( std::abs(x - cx) < radius+1.5 and std::abs(y - cy) < radius+1.5)
+        return true;
+      else
+        return false;
+    };
+  std::for_each(xyis.begin(),xyis.end(),[&g,cx,cy,radius,circle_intersect_segment,getMinimumPositive,is_near](auto xyi){
+    auto [x,y,i] = xyi;
+
+
+    if(x == 0) g.flags_data(x,y,i) = Flags::inlet;
+    else if(x == g.nx - 1) g.flags_data(x,y,i) = Flags::outlet;
+    else if (is_near(x,y)) {
+      auto intersection = getMinimumPositive(circle_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]));
+      if(intersection.) // TODO
+    } else if (not is_near(x,y)) std::numeric_limits<T>::signaling_NaN();
+  });
 }
 
 void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
@@ -236,11 +268,11 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
       // Handle periodic and bounce-back boundary conditions
-      if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, bb)) {
+      if (g.flags_data(x,y,i) == Flags::hwbb) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
-      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, inflow)) {
+      } else if (g.flags_data(x,y,i) == Flags::inlet) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
-      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, outflow)) {
+      } else if (g.flags_data(x,y,i) == Flags::outlet) {
         //do nothing
 //      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, symmetry)) {
 //        if (g.cx[i] not_eq 0) g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[i] : g.anticlockwise_90[i]) = tmpf[i];
@@ -358,6 +390,7 @@ int main() {
   auto is = std::views::iota(0, g->q);
   auto xis = std::views::cartesian_product(xs, is);
   auto yis = std::views::cartesian_product(ys, is);
+  auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
   T Re =100;
@@ -378,6 +411,8 @@ int main() {
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
+
+  cylinder_flags_initialization(*g);
 
 
   // Initialize the D2Q9lattice with the double shear layer
