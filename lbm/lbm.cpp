@@ -20,9 +20,51 @@ namespace exper = std::experimental;
 using layout = exper::layout_left;
 
 
-// Function to write VTK file for 2D data
-template<typename T1, typename T2>
-void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T2 &md2, int NX, int NY) {
+//// Function to write VTK file for 2D data
+//template<typename T1, typename T2>
+//void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T2 &md2, int NX, int NY) {
+//  std::ofstream out(filename); // Open the file
+//
+//  if (!out.is_open()) {
+//    throw std::ios_base::failure("Failed to open file");
+//  }
+//
+//  int N = NX * NY;
+//
+//  out << "# vtk DataFile Version 3.0\n";
+//  out << "2D Test file\n";
+//  out << "ASCII\n";
+//  out << "DATASET STRUCTURED_GRID\n";
+//  out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n'; // Z dimension is 1 for 2D data
+//  out << "POINTS " << N << " double\n";
+//
+//  for (int ix = 0; ix < NX; ++ix) {
+//    for (int iy = 0; iy < NY; ++iy) {
+//      out << grid_coordinates[(ix * NY + iy) * 3 + 0] << " " << grid_coordinates[(ix * NY + iy) * 3 + 1] << " " << grid_coordinates[(ix * NY + iy) * 3 + 2] << '\n';
+//    }
+//  }
+//
+//  // Writing scalar or vector field data
+//  out << "POINT_DATA " << N << '\n';
+//  out << "VECTORS velocity double\n";
+//  for (int ix = 0; ix < NX; ++ix) {
+//    for (int iy = 0; iy < NY; ++iy) {
+//      for (int ic1 = 0; ic1 < 3; ++ic1) { // Assuming 3 components for velocity vector
+//        out << md2[(ix * NY + iy) * 3 + ic1] << ' ';
+//      }
+//      out << '\n';
+//    }
+//  }
+//  out.close(); // Close the file
+//}
+
+template<typename T, typename LayoutPolicy>
+void writeVTK2D(
+    const std::string &filename,
+    tl::cartesian_product_view<std::ranges::iota_view<int, int>, std::ranges::iota_view<int, int>>grid,
+    std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int, 3>, LayoutPolicy>>> fields,
+    int NX, int NY
+) {
   std::ofstream out(filename); // Open the file
 
   if (!out.is_open()) {
@@ -38,29 +80,41 @@ void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T
   out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n'; // Z dimension is 1 for 2D data
   out << "POINTS " << N << " double\n";
 
-  for (int ix = 0; ix < NX; ++ix) {
-    for (int iy = 0; iy < NY; ++iy) {
-      out << grid_coordinates[(ix * NY + iy) * 3 + 0] << " " << grid_coordinates[(ix * NY + iy) * 3 + 1] << " " << grid_coordinates[(ix * NY + iy) * 3 + 2] << '\n';
-    }
+  // Writing the grid coordinates using cartesian product
+  for (const auto& [ix, iy] : grid) {
+    out << ix << " " << iy << " " << 0 << '\n';
   }
 
-  // Writing scalar or vector field data
+  // Writing field data
   out << "POINT_DATA " << N << '\n';
-  out << "VECTORS velocity double\n";
-  for (int ix = 0; ix < NX; ++ix) {
-    for (int iy = 0; iy < NY; ++iy) {
-      for (int ic1 = 0; ic1 < 3; ++ic1) { // Assuming 3 components for velocity vector
-        out << md2[(ix * NY + iy) * 3 + ic1] << ' ';
+
+  for (const auto& [field_name, field_data] : fields) {
+    int num_components = field_data.extent(2);
+
+    if (num_components == 1) {
+      out << "SCALARS " << field_name << " double\n";
+      out << "LOOKUP_TABLE default\n";
+    } else if (num_components < 4){
+      out << "VECTORS " << field_name << " double\n";
+    }else {
+      out << "TENSORS " << field_name << " double\n";
+    }
+
+    for (const auto& [ix, iy] : grid) {
+      for (int ic = 0; ic < num_components; ++ic) {
+        out << field_data(ix, iy, ic) << ' ';
       }
+      if (num_components < 3) out << 0 << ' ';
       out << '\n';
     }
   }
   out.close(); // Close the file
 }
 
-enum class Flags{hwbb,inlet,outlet,symmetry};
+
 // Data structure for the D2Q9lattice
 struct D2Q9lattice {
+  enum Flags{bulk,hwbb,inlet,outlet,symmetry};
   int nx, ny;
   const T llb;
   const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
@@ -80,20 +134,20 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data;
-  exper::mdspan<T, exper::dextents<int,2>,layout> u_data, v_data, rho_data;
+  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data;
+  exper::mdspan<T, exper::dextents<int,2>,layout>  rho_data;
   exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
 
   D2Q9lattice(int nx, int ny, T llb, int number_dynamic_scalars = 1) : nx(nx), ny(ny), llb(llb),
-                         buffer(nx * ny * 9 * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0) // Adjust buffer size accordingly
+                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0),
+                                                                       flags_buffer(nx * ny * q,bulk)// Adjust buffer size accordingly
   {
-    f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, 9);
-    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, 9);
-    u_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny);
-    v_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size(), nx, ny);
-    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size() + v_data.size(), nx, ny);
-    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + u_data.size() + v_data.size()+ rho_data.size(), nx, ny,number_dynamic_scalars);
-    flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,9);
+    f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, q);
+    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, q);
+    velocity_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
+    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny);
+    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rho_data.size(), nx, ny,number_dynamic_scalars);
+    flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,q);
 
     initialize();
   }
@@ -113,8 +167,8 @@ struct D2Q9lattice {
         T ux = 0.0;
         T uy = 0.0;
         rho_data(x, y) = rho_val;
-        u_data(x, y) = ux;
-        v_data(x, y) = uy;
+        velocity_data(x, y, 0) = ux;
+        velocity_data(x, y, 1) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
@@ -144,8 +198,8 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
       uy += g.f_data(x, y, iPop) * g.cy[i];
     }
     g.rho_data(x, y) = rho;
-    g.u_data(x, y) = ux / rho;
-    g.v_data(x, y) = uy / rho;
+    g.velocity_data(x, y, 0) = ux / rho;
+    g.velocity_data(x, y, 1) = uy / rho;
   });
 }
 
@@ -165,22 +219,14 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
   T cy = g.ny/2.;
   T radius = g.ny/10.;
 
-  auto getMinimumPositive = [](const std::array<T, 2>& p) -> std::optional<T> {
-    std::optional<T> minimumPositive;
-
-    if (p[0] > 0) {
-      minimumPositive = p[0];
-    }
-
-    if (p[1] > 0) {
-      if (minimumPositive) {
-        minimumPositive = std::min(minimumPositive.value(), p[1]);
-      } else {
-        minimumPositive = p[1];
+  auto getMinimumPositive = [](const auto& iterable) -> std::optional<T> {
+    std::optional<T> minValue;
+    for (const auto& value : iterable) {
+      if (value > 0 && (!minValue || value < *minValue)) {
+        minValue = value;
       }
     }
-
-    return minimumPositive;
+    return minValue;
   };
 
 
@@ -217,14 +263,19 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
   std::for_each(xyis.begin(),xyis.end(),[&g,cx,cy,radius,circle_intersect_segment,getMinimumPositive,is_near](auto xyi){
     auto [x,y,i] = xyi;
 
-
-    if(x == 0) g.flags_data(x,y,i) = Flags::inlet;
-    else if(x == g.nx - 1) g.flags_data(x,y,i) = Flags::outlet;
-    else if (is_near(x,y)) {
-      auto intersection = getMinimumPositive(circle_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]));
-      if(intersection.) // TODO
-    } else if (not is_near(x,y)) std::numeric_limits<T>::signaling_NaN();
-  });
+    if (x == 0)
+      g.flags_data(x, y, i) = g.inlet;
+    else if (x == (g.nx - 1))
+      g.flags_data(x, y, i) = g.outlet;
+    else if (is_near(x, y)) {
+      auto intersection =
+          getMinimumPositive(circle_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]));
+      if (intersection.has_value()) {
+        g.flags_data(x, y, i) = g.hwbb;
+        g.dynamic_data(x, y, i) = intersection.value();
+      }
+    } else /*if (not is_near(x,y))*/ g.flags_data(x, y, i) = g.bulk;
+});
 }
 
 void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
@@ -267,17 +318,15 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       int x_stream_periodic = (x_stream + g.nx) % g.nx;
       int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
+//      auto a = g.hwbb;
       // Handle periodic and bounce-back boundary conditions
-      if (g.flags_data(x,y,i) == Flags::hwbb) {
+      if (g.flags_data(x,y,i) == g.hwbb) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
-      } else if (g.flags_data(x,y,i) == Flags::inlet) {
+      } else if (g.flags_data(x,y,i) == g.inlet) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
-      } else if (g.flags_data(x,y,i) == Flags::outlet) {
+      } else if (g.flags_data(x,y,i) == g.outlet) {
         //do nothing
-//      } else if (cylinder_configuration(x_stream, y_stream, g.nx, g.ny,Rsquared, symmetry)) {
-//        if (g.cx[i] not_eq 0) g.f_data_2(x, y, g.cx[i] < 0 ? g.clockwise_90[i] : g.anticlockwise_90[i]) = tmpf[i];
-//        else g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
-      } else { // periodic
+      }  else { // periodic
         g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       }
     }
@@ -358,8 +407,8 @@ void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) 
       T uy = U0 * delta * std::sin(2.0 * M_PI * (static_cast<T>(x) / static_cast<T>(nx) + 0.25));
 
       g.rho_data(x, y) = rho_val;
-      g.u_data(x, y) = ux;
-      g.v_data(x, y) = uy;
+      g.velocity_data(x, y, 0) = ux;
+      g.velocity_data(x, y, 1) = uy;
 
       // Initialize populations based on the equilibrium distribution
       for (int i = 0; i < 9; ++i) {
@@ -390,6 +439,7 @@ int main() {
   auto is = std::views::iota(0, g->q);
   auto xis = std::views::cartesian_product(xs, is);
   auto yis = std::views::cartesian_product(ys, is);
+  auto xys = std::views::cartesian_product(xs, ys);
   auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
@@ -435,28 +485,42 @@ int main() {
     if (t % outputIter == 0) {
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      std::vector<T> grid_points((nx * ny) * 3);
-      std::vector<T> macroscopic_data((nx * ny) * 3);
+//      std::vector<T> grid_points((nx * ny) * 3);
+//      std::vector<T> macroscopic_data((nx * ny) * 3);
 
-      for (int x = 0; x < nx; ++x) {
-        for (int y = 0; y < ny; ++y) {
-          int idx3d = (x * ny + y) * 3;
+//      for (int x = 0; x < nx; ++x) {
+//        for (int y = 0; y < ny; ++y) {
+//          int idx3d = (x * ny + y) * 3;
+//
+//          // Coordinates for each grid point (assuming a uniform grid, z=0 for 2D)
+//          grid_points[idx3d + 0] = x;
+//          grid_points[idx3d + 1] = y;
+//          grid_points[idx3d + 2] = 0;
+//
+//          // Velocity
+//          macroscopic_data[idx3d + 0] = g->velocity_data(x, y, 0);
+//          macroscopic_data[idx3d + 1] = g->velocity_data(x, y, 1);
+//          macroscopic_data[idx3d + 2] = 0; // z component of velocity is zero for 2D
+//        }
+//      }
+      // List of fields to output
+      // Access the underlying raw data pointer; assuming `data` method or similar exists
+      D2Q9lattice::Flags* flags_data = g->flags_data.data_handle();
+      auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_data,g->flags_buffer.size());
+      // Cast to `float*`
+      std::vector<T> float_data;
+      std::transform(flags_iterable.begin(),flags_iterable.end(),std::back_inserter(float_data),[](auto&& flag){return static_cast<T>(flag);});
+      // Create the new `mdspan` with `float` type
+      exper::mdspan<T, exper::dextents<int, 3>, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
-          // Coordinates for each grid point (assuming a uniform grid, z=0 for 2D)
-          grid_points[idx3d + 0] = x;
-          grid_points[idx3d + 1] = y;
-          grid_points[idx3d + 2] = 0;
-
-          // Velocity
-          macroscopic_data[idx3d + 0] = g->u_data(x, y);
-          macroscopic_data[idx3d + 1] = g->v_data(x, y);
-          macroscopic_data[idx3d + 2] = 0; // z component of velocity is zero for 2D
-        }
-      }
+      std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int,3>,layout> > > fields = {
+          {"velocity", g->velocity_data},
+          {"flags", float_mdspan}
+      };
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
-      writeVTK2D(filename, grid_points, macroscopic_data, nx, ny);
+      writeVTK2D(filename, xys, fields, nx, ny);
       auto after_out = std::chrono::high_resolution_clock::now();
 
       output_time += after_out - before_out;
