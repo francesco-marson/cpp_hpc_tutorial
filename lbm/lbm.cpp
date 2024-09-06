@@ -91,13 +91,16 @@ void writeVTK2D(
   for (const auto& [field_name, field_data] : fields) {
     int num_components = field_data.extent(2);
 
-    if (num_components == 1) {
+    if (num_components <= 1) {
       out << "SCALARS " << field_name << " double\n";
+//      std::cout << "writing... SCALARS " << field_name << " double" << "; num_components = " << num_components << std::endl;
       out << "LOOKUP_TABLE default\n";
     } else if (num_components < 4){
       out << "VECTORS " << field_name << " double\n";
+//      std::cout << "writing... VECTORS " << field_name << " double" << "; num_components = " << num_components << std::endl;
     }else {
       out << "TENSORS " << field_name << " double\n";
+//      std::cout << "writing... TENSORS " << field_name << " double" << "; num_components = " << num_components << std::endl;
     }
 
     for (const auto& [ix, iy] : grid) {
@@ -120,6 +123,7 @@ struct D2Q9lattice {
   const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   const std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
   const std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  const std::array<T, 9> cnorm = {0, 1, 1, 1, 1, sqrt((T)2), sqrt((T)2), sqrt((T)2), sqrt((T)2)};
   const int d = 2;
   const int q = 9;
   const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
@@ -134,8 +138,10 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data;
-  exper::mdspan<T, exper::dextents<int,2>,layout>  rho_data;
+  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data,rho_data_;
+    // Take a subspan that only considers the first two indices
+// Define the full type for the submdspan
+    exper::mdspan<T, exper::dextents<int, 2>, layout> rho_data;
   exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
 
   D2Q9lattice(int nx, int ny, T llb, int number_dynamic_scalars = 1) : nx(nx), ny(ny), llb(llb),
@@ -145,10 +151,13 @@ struct D2Q9lattice {
     f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, q);
     f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, q);
     velocity_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
-    rho_data = exper::mdspan<T, exper::dextents<int,2>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny);
-    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rho_data.size(), nx, ny,number_dynamic_scalars);
+    rho_data_ = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
+    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rho_data_.size(), nx, ny,number_dynamic_scalars);
+
     flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,q);
 
+      // Take the subspan that only considers the first two indexes
+    rho_data = exper::submdspan(rho_data_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
     initialize();
   }
 
@@ -230,29 +239,43 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
   };
 
 
-  auto circle_intersect_segment = [cx, cy, radius](T x1, T y1, T x2, T y2)-> std::array<T, 2>{
-    T dx = x2 - x1;
-    T dy = y2 - y1;
+// Lambda that determines the intersection points of a circle and a line segment.
+    auto circle_intersect_segment = [cx, cy, radius](T x1, T y1, T x2, T y2)-> std::array<T, 2> {
+        // Calculate the difference in x and y coordinates of the end points of the segment.
+        T dx = x2 - x1;
+        T dy = y2 - y1;
 
-    T fx = x1 - cx;
-    T fy = y1 - cy;
+        // Calculate the difference in x and y coordinates between
+        // the initial point of the segment and the center of the circle.
+        T fx = x1 - cx;
+        T fy = y1 - cy;
 
-    T a = dx * dx + dy * dy;
-    T b = 2 * (fx * dx + fy * dy);
-    T c = fx * fx + fy * fy - radius * radius;
+        // Coefficients for the quadratic equation ax^2 + bx + c = 0
+        // derived from the equation of the circle and line segment.
+        T a = dx * dx + dy * dy;
+        T b = 2 * (fx * dx + fy * dy);
+        T c = fx * fx + fy * fy - radius * radius;
 
-    T discriminant = b * b - 4 * a * c;
+        // Calculate the discriminant of the quadratic equation to determine if there are intersection points.
+        T discriminant = b * b - 4 * a * c;
 
-    if (discriminant < 0)
-      return std::array<T, 2>{NAN, NAN};
+        // If the discriminant is less than zero, there are no real intersection points.
+        if (discriminant < 0)
+            return std::array<T, 2>{NAN, NAN};
 
-    discriminant = std::sqrt(discriminant);
+        // Calculate the square root of the discriminant.
+        discriminant = std::sqrt(discriminant);
 
-    T t1 = (-b - discriminant) / (2 * a);
-    T t2 = (-b + discriminant) / (2 * a);
+        // Compute the two solutions of the quadratic equation,
+        // which correspond to the parameter values of the intersection points.
+        T t1 = (-b - discriminant) / (2 * a);
+        T t2 = (-b + discriminant) / (2 * a);
 
-    return std::array<T, 2>{t1, t2};
-  };
+
+        // Return the parameter values of the intersection points.
+        return std::array<T, 2>{t1, t2};
+    };
+
 
     auto is_near = [cx,cy,radius](int x, int y){
       if ( std::abs(x - cx) < radius+1.5 and std::abs(y - cy) < radius+1.5)
@@ -263,14 +286,14 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
   std::for_each(xyis.begin(),xyis.end(),[&g,cx,cy,radius,circle_intersect_segment,getMinimumPositive,is_near](auto xyi){
     auto [x,y,i] = xyi;
 
-    if (x == 0)
+    if (x == 0 and g.cx[i] == -1)
       g.flags_data(x, y, i) = g.inlet;
     else if (x == (g.nx - 1))
       g.flags_data(x, y, i) = g.outlet;
     else if (is_near(x, y)) {
       auto intersection =
           getMinimumPositive(circle_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]));
-      if (intersection.has_value()) {
+      if (intersection.has_value() and intersection.value() < g.cnorm[i]) {
         g.flags_data(x, y, i) = g.hwbb;
         g.dynamic_data(x, y, i) = intersection.value();
       }
@@ -310,7 +333,6 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       T u_sq = ux * ux + uy * uy;
       T cu_sq = cu * cu;
       feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
-      tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
       tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
@@ -426,8 +448,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 200;
-  int ny = 200;
+  int nx = 100;
+  int ny = 100;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -485,26 +507,8 @@ int main() {
     if (t % outputIter == 0) {
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-//      std::vector<T> grid_points((nx * ny) * 3);
-//      std::vector<T> macroscopic_data((nx * ny) * 3);
 
-//      for (int x = 0; x < nx; ++x) {
-//        for (int y = 0; y < ny; ++y) {
-//          int idx3d = (x * ny + y) * 3;
-//
-//          // Coordinates for each grid point (assuming a uniform grid, z=0 for 2D)
-//          grid_points[idx3d + 0] = x;
-//          grid_points[idx3d + 1] = y;
-//          grid_points[idx3d + 2] = 0;
-//
-//          // Velocity
-//          macroscopic_data[idx3d + 0] = g->velocity_data(x, y, 0);
-//          macroscopic_data[idx3d + 1] = g->velocity_data(x, y, 1);
-//          macroscopic_data[idx3d + 2] = 0; // z component of velocity is zero for 2D
-//        }
-//      }
-      // List of fields to output
-      // Access the underlying raw data pointer; assuming `data` method or similar exists
+      // Access the underlying raw data pointer;
       D2Q9lattice::Flags* flags_data = g->flags_data.data_handle();
       auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_data,g->flags_buffer.size());
       // Cast to `float*`
@@ -515,6 +519,7 @@ int main() {
 
       std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int,3>,layout> > > fields = {
           {"velocity", g->velocity_data},
+          {"rho", g->rho_data_},
           {"flags", float_mdspan}
       };
 
