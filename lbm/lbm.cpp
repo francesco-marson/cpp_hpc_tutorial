@@ -20,44 +20,6 @@ namespace exper = std::experimental;
 using layout = exper::layout_left;
 
 
-//// Function to write VTK file for 2D data
-//template<typename T1, typename T2>
-//void writeVTK2D(const std::string &filename, const T1 &grid_coordinates, const T2 &md2, int NX, int NY) {
-//  std::ofstream out(filename); // Open the file
-//
-//  if (!out.is_open()) {
-//    throw std::ios_base::failure("Failed to open file");
-//  }
-//
-//  int N = NX * NY;
-//
-//  out << "# vtk DataFile Version 3.0\n";
-//  out << "2D Test file\n";
-//  out << "ASCII\n";
-//  out << "DATASET STRUCTURED_GRID\n";
-//  out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n'; // Z dimension is 1 for 2D data
-//  out << "POINTS " << N << " double\n";
-//
-//  for (int ix = 0; ix < NX; ++ix) {
-//    for (int iy = 0; iy < NY; ++iy) {
-//      out << grid_coordinates[(ix * NY + iy) * 3 + 0] << " " << grid_coordinates[(ix * NY + iy) * 3 + 1] << " " << grid_coordinates[(ix * NY + iy) * 3 + 2] << '\n';
-//    }
-//  }
-//
-//  // Writing scalar or vector field data
-//  out << "POINT_DATA " << N << '\n';
-//  out << "VECTORS velocity double\n";
-//  for (int ix = 0; ix < NX; ++ix) {
-//    for (int iy = 0; iy < NY; ++iy) {
-//      for (int ic1 = 0; ic1 < 3; ++ic1) { // Assuming 3 components for velocity vector
-//        out << md2[(ix * NY + iy) * 3 + ic1] << ' ';
-//      }
-//      out << '\n';
-//    }
-//  }
-//  out.close(); // Close the file
-//}
-
 template<typename T, typename LayoutPolicy>
 void writeVTK2D(
     const std::string &filename,
@@ -81,7 +43,7 @@ void writeVTK2D(
   out << "POINTS " << N << " double\n";
 
   // Writing the grid coordinates using cartesian product
-  for (const auto& [ix, iy] : grid) {
+  for (const auto& [iy, ix] : grid) {
     out << ix << " " << iy << " " << 0 << '\n';
   }
 
@@ -103,7 +65,7 @@ void writeVTK2D(
 //      std::cout << "writing... TENSORS " << field_name << " double" << "; num_components = " << num_components << std::endl;
     }
 
-    for (const auto& [ix, iy] : grid) {
+    for (const auto& [iy, ix] : grid) {
       for (int ic = 0; ic < num_components; ++ic) {
         out << field_data(ix, iy, ic) << ' ';
       }
@@ -448,8 +410,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 100;
-  int ny = 100;
+  int nx = 6;
+  int ny = 5;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -465,7 +427,7 @@ int main() {
   auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
-  T Re =100;
+  T Re =1000;
   T Ma = 0.1;
 
   // reference dimensions
@@ -476,8 +438,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 200;Tlb;
-  int outputIter = 1;num_steps / 100;
+  int num_steps = 2;Tlb; 200;
+  int outputIter = 1;num_steps / 10;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
@@ -525,7 +487,7 @@ int main() {
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
-      writeVTK2D(filename, xys, fields, nx, ny);
+      writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
       auto after_out = std::chrono::high_resolution_clock::now();
 
       output_time += after_out - before_out;
@@ -548,7 +510,7 @@ int main() {
 
   // End time measurement
   auto end_time = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> elapsed = end_time - start_time - output_time;
+  std::chrono::duration<double> elapsed = end_time - start_time /*- output_time*/;
 
   // Compute performance in MLUP/s
   long total_lattice_updates = static_cast<long>(nx) * static_cast<long>(ny) * static_cast<long>(num_steps-warm_up_iter);
