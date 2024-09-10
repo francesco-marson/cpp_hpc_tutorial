@@ -88,6 +88,7 @@ struct D2Q9lattice {
   const std::array<T, 9> cnorm = {0, 1, 1, 1, 1, sqrt((T)2), sqrt((T)2), sqrt((T)2), sqrt((T)2)};
   const int d = 2;
   const int q = 9;
+  const int number_dynamic_scalars = q;
   const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
   // Precomputed indices for 90° rotations
   // index =                                      {0, 1, 2, 3, 4, 5, 6, 7, 8};
@@ -106,7 +107,7 @@ struct D2Q9lattice {
     exper::mdspan<T, exper::dextents<int, 2>, layout> rho_data;
   exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
 
-  D2Q9lattice(int nx, int ny, T llb, int number_dynamic_scalars = 1) : nx(nx), ny(ny), llb(llb),
+  D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
                          buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0),
                                                                        flags_buffer(nx * ny * q,bulk)// Adjust buffer size accordingly
   {
@@ -186,9 +187,9 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
 
 
 
-  T cx = g.nx/3.;
-  T cy = g.ny/2.;
-  T radius = g.ny/10.;
+  T cx = g.nx/3.-0.5+std::numeric_limits<T>::epsilon();
+  T cy = g.ny/2.-0.5+std::numeric_limits<T>::epsilon();
+  T radius = g.ny/10.+std::numeric_limits<T>::epsilon();
 
   auto getMinimumPositive = [](const auto& iterable) -> std::optional<T> {
     std::optional<T> minValue;
@@ -250,7 +251,11 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
 
     if (x == 0 and g.cx[i] == -1)
       g.flags_data(x, y, i) = g.inlet;
-    else if (x == (g.nx - 1))
+    else if (x == (g.nx - 1) and g.cx[i] > 0)
+      g.flags_data(x, y, i) = g.outlet;
+    else if (/*x > 0 and */y == 0 and g.cy[i] < 0)
+      g.flags_data(x, y, i) = g.outlet;
+    else if (/*x > 0 and */y == g.ny-1 and g.cy[i] > 0)
       g.flags_data(x, y, i) = g.outlet;
     else if (is_near(x, y)) {
       auto intersection =
@@ -291,11 +296,14 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
 
     // Compute equilibrium distributions
     for (int i = 0; i < 9; ++i) {
+        auto& iopp = g.opposite[i];
       T cu = g.cx[i] * ux + g.cy[i] * uy;
       T u_sq = ux * ux + uy * uy;
       T cu_sq = cu * cu;
       feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
+      T feq_iopp = g.w[i] * rho * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
       tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+      T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
       int x_stream = x + g.cx[i];
       int y_stream = y + g.cy[i];
       // Variables to handle periodic boundary conditions
@@ -305,7 +313,9 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
 //      auto a = g.hwbb;
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_data(x,y,i) == g.hwbb) {
-        g.f_data_2(x, y, g.opposite[i]) = tmpf[i];
+          T q = g.dynamic_data(x,y,i)/g.cnorm[i];
+//        g.f_data_2(x, y, iopp) = tmpf[i];
+          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
       } else if (g.flags_data(x,y,i) == g.inlet) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_data(x,y,i) == g.outlet) {
@@ -410,8 +420,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 6;
-  int ny = 5;
+  int nx = 200;
+  int ny = 100;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -427,8 +437,8 @@ int main() {
   auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
-  T Re =1000;
-  T Ma = 0.1;
+  T Re =10;
+  T Ma = 0.125;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
@@ -438,8 +448,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 2;Tlb; 200;
-  int outputIter = 1;num_steps / 10;
+  int num_steps = Tlb; 200;
+  int outputIter = num_steps / 10;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
@@ -500,12 +510,12 @@ int main() {
                     auto [y, i] = yi;
                     f(nx - 1, y, i) = f(nx - 2, y, i);
                   });
-//    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
-//                  [f = g->f_data, nx, ny](auto xi) {
-//                    auto [x, i] = xi;
-//                    f(x, ny - 1, i) = f(x, ny - 2, i);
-//                    f(x, 0, i) = f(x, 1, i);
-//                  });
+    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
+                  [f = g->f_data, nx, ny](auto xi) {
+                    auto [x, i] = xi;
+                    f(x, ny - 1, i) = f(x, ny - 2, i);
+                    f(x, 0, i) = f(x, 1, i);
+                  });
   }
 
   // End time measurement
