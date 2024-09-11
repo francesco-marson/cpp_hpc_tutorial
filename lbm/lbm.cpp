@@ -175,6 +175,107 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   });
 }
 
+std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint length, unsigned int tesselation,
+                                                  const std::string& naca, double aoa_deg) {
+    std::vector<std::array<T,2> > points;
+    double t = std::stoi(naca.substr(2, 2)) / 100.0;
+    double m = std::stoi(naca.substr(0, 1)) / 100.0;
+    double p = std::stoi(naca.substr(1, 1)) / 10.0;
+
+    double aoa_rad = M_PI * aoa_deg / 180.0; // Convert aoa to radians
+
+    for (unsigned int i = 0; i <= tesselation; ++i) {
+        double x = ((double)i) / tesselation;
+        double yt = 5 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * pow(x, 2) + 0.2843 * pow(x, 3) - 0.1015 * pow(x, 4));
+        double yc;
+        if (x <= p) {
+            yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
+        } else {
+            yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+        }
+        double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
+        points.push_back(std::array<T,2>{(x - yt * sin(theta))*length+origin[0], (yc + yt * cos(theta))*length+origin[1]});
+    }
+
+    for (int i = tesselation-1; i >= 0; --i) {
+        double x = ((double)i) / tesselation;
+        double yt = 5 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * pow(x, 2) + 0.2843 * pow(x, 3) - 0.1015 * pow(x, 4));
+        double yc;
+        if (x <= p) {
+            yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
+        } else {
+            yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+        }
+        double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
+        points.push_back(std::array<T,2>{(x + yt * sin(theta))*length+origin[0], (yc - yt * cos(theta))*length+origin[1]});
+    }
+
+    return points;
+}
+
+auto line_segments_flags_initialization(D2Q9lattice& g, const std::vector<std::array<T, 2>>& segments){
+    // indexes
+    auto xs = std::views::iota(0, g.nx);
+    auto ys = std::views::iota(0, g.ny);
+    auto is = std::views::iota(0, g.q);
+    auto xis = std::views::cartesian_product(xs, is);
+    auto yis = std::views::cartesian_product(ys, is);
+    auto xyis = std::views::cartesian_product(xs,ys, is);
+
+    auto getMinimumPositive = [](const auto& iterable) -> std::optional<T> {
+        std::optional<T> minValue;
+        for (const auto& value : iterable) {
+            if (value > 0 && (!minValue || value < *minValue)) {
+                minValue = value;
+            }
+        }
+        return minValue;
+    };
+
+    // Lambda for line segment intersection
+    auto segment_intersect_segment = [segments,getMinimumPositive](T x1, T y1, T x2, T y2) -> std::optional<T> {
+        std::vector<T> intersections;
+        for (auto it = segments.begin(); it != segments.end(); ++it){
+            const auto& segment = *it;
+            const auto& segment_next = it != std::prev(segments.end()) ? *(it +1) : segments.front();
+            T s1_x = x2 - x1;
+            T s1_y = y2 - y1;
+            T s2_x = segment_next[0] - segment[0];
+            T s2_y = segment_next[1] - segment[1];
+
+            T s = (-s1_y * (x1 - segment[0]) + s1_x * (y1 - segment[1])) / (-s2_x * s1_y + s1_x * s2_y);
+            T t = (s2_x * (y1 - segment[1]) - s2_y * (x1 - segment[0])) / (-s2_x * s1_y + s1_x * s2_y);
+
+            if (s >= 0 && s <= 1 && t >= 0 && t <= 1)
+                intersections.push_back(std::sqrt(s1_x * s1_x + s1_y * s1_y) * t);
+        }
+
+        return getMinimumPositive(intersections);
+    };
+
+    std::for_each(xyis.begin(),xyis.end(),[&g,segment_intersect_segment](auto xyi){
+        auto [x,y,i] = xyi;
+
+        if (x == 0 and g.cx[i] == -1)
+            g.flags_data(x, y, i) = g.inlet;
+        else if (x == (g.nx - 1) and g.cx[i] > 0)
+            g.flags_data(x, y, i) = g.outlet;
+        else if (y == 0 and g.cy[i] < 0)
+            g.flags_data(x, y, i) = g.outlet;
+        else if (y == g.ny-1 and g.cy[i] > 0)
+            g.flags_data(x, y, i) = g.outlet;
+        else {
+            auto intersection =
+                    segment_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]);
+            if (intersection.has_value() and intersection.value() < g.cnorm[i]) {
+                g.flags_data(x, y, i) = g.hwbb;
+                g.dynamic_data(x, y, i) = intersection.value();
+            } else {
+                g.flags_data(x, y, i) = g.bulk;
+            }
+        }
+    });
+}
 
 auto cylinder_flags_initialization(D2Q9lattice& g){
   // indexes
@@ -314,8 +415,8 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_data(x,y,i) == g.hwbb) {
           T q = g.dynamic_data(x,y,i)/g.cnorm[i];
-//        g.f_data_2(x, y, iopp) = tmpf[i];
-          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
+        g.f_data_2(x, y, iopp) = tmpf[i];
+//          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
       } else if (g.flags_data(x,y,i) == g.inlet) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_data(x,y,i) == g.outlet) {
@@ -420,8 +521,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 200;
-  int ny = 100;
+  int nx = 500;
+  int ny = 200;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -437,7 +538,7 @@ int main() {
   auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
-  T Re =10;
+  T Re =5000;
   T Ma = 0.125;
 
   // reference dimensions
@@ -448,15 +549,16 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = Tlb; 200;
-  int outputIter = num_steps / 10;
+  int num_steps = /*Tlb;*/ 1000;
+  int outputIter = 50;num_steps / 20;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
-  cylinder_flags_initialization(*g);
+//  cylinder_flags_initialization(*g);
+  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.,g->ny/2.},150,500, "2412",10));
 
 
   // Initialize the D2Q9lattice with the double shear layer
@@ -491,7 +593,7 @@ int main() {
 
       std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int,3>,layout> > > fields = {
           {"velocity", g->velocity_data},
-          {"rho", g->rho_data_},
+//          {"rho", g->rho_data_},
           {"flags", float_mdspan}
       };
 
