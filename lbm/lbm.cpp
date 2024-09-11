@@ -194,7 +194,14 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
             yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
         }
         double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
-        points.push_back(std::array<T,2>{(x - yt * sin(theta))*length+origin[0], (yc + yt * cos(theta))*length+origin[1]});
+
+        // Apply rotation using rotation matrix
+        double x1 = (x - yt * sin(theta))*length;
+        double x2 = (yc + yt * cos(theta))*length;
+        double xr = x1 * cos(aoa_rad) - x2 * sin(aoa_rad);
+        double yr = x1 * sin(aoa_rad) + x2 * cos(aoa_rad);
+
+        points.push_back(std::array<T,2>{xr + origin[0], yr + origin[1]});
     }
 
     for (int i = tesselation-1; i >= 0; --i) {
@@ -207,7 +214,14 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
             yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
         }
         double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
-        points.push_back(std::array<T,2>{(x + yt * sin(theta))*length+origin[0], (yc - yt * cos(theta))*length+origin[1]});
+
+        // Apply rotation using rotation matrix
+        double x1 = (x + yt * sin(theta))*length;
+        double x2 = (yc - yt * cos(theta))*length;
+        double xr = x1 * cos(aoa_rad) - x2 * sin(aoa_rad);
+        double yr = x1 * sin(aoa_rad) + x2 * cos(aoa_rad);
+
+        points.push_back(std::array<T,2>{xr + origin[0], yr + origin[1]});
     }
 
     return points;
@@ -521,8 +535,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 500;
-  int ny = 200;
+  int nx = 1200;
+  int ny = 600;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -538,7 +552,7 @@ int main() {
   auto xyis = std::views::cartesian_product(xs,ys, is);
 
   // nondimentional numbers
-  T Re =5000;
+  T Re =10000;
   T Ma = 0.125;
 
   // reference dimensions
@@ -549,8 +563,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = /*Tlb;*/ 1000;
-  int outputIter = 50;num_steps / 20;
+  int num_steps = Tlb; 1000;
+  int outputIter = /*50;*/num_steps / 20;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
@@ -558,7 +572,7 @@ int main() {
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
 //  cylinder_flags_initialization(*g);
-  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.,g->ny/2.},150,500, "2412",10));
+  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-10));
 
 
   // Initialize the D2Q9lattice with the double shear layer
