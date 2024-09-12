@@ -296,9 +296,7 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
   auto is = std::views::iota(0, g.q);
-  auto xis = std::views::cartesian_product(xs, is);
-  auto yis = std::views::cartesian_product(ys, is);
-  auto xyis = std::views::cartesian_product(xs,ys, is);
+  auto iyxs = std::views::cartesian_product(is,ys, xs);
 
 
 
@@ -361,8 +359,8 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
       else
         return false;
     };
-  std::for_each(xyis.begin(),xyis.end(),[&g,cx,cy,radius,circle_intersect_segment,getMinimumPositive,is_near](auto xyi){
-    auto [x,y,i] = xyi;
+  std::for_each(iyxs.begin(),iyxs.end(),[&g,cx,cy,radius,circle_intersect_segment,getMinimumPositive,is_near](auto iyx){
+    auto [i,y,x] = iyx;
 
     if (x == 0 and g.cx[i] == -1)
       g.flags_data(x, y, i) = g.inlet;
@@ -386,15 +384,20 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
 void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
-  auto xs = std::views::iota(0, g.nx);
-  auto ys = std::views::iota(0, g.ny);
-  auto ids = std::views::cartesian_product(xs, ys);
+    // indexes
+    auto xs = std::views::iota(0, g.nx);
+    auto ys = std::views::iota(0, g.ny);
+    auto is = std::views::iota(0, g.q);
+    auto ixs = std::views::cartesian_product(is, xs);
+    auto iys = std::views::cartesian_product(is, ys);
+    auto yxs = std::views::cartesian_product(ys, xs);
+    auto xys = std::views::cartesian_product(xs, ys);
+    auto iyxs = std::views::cartesian_product(is,ys, xs);
 
-  T Rsquared = g.llb*g.llb;
 
   // Parallel loop ensuring thread safety
-  std::for_each(std::execution::par_unseq, ids.begin(), ids.end(), [&g, omega, ulb,Rsquared](auto idx) {
-    auto [x, y] = idx;
+  std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega, ulb](auto idx) {
+    auto [y,x] = idx;
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
     T rho = 0.0, ux = 0.0, uy = 0.0;
@@ -443,63 +446,6 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   g.swap();
 }
 
-//template<int truncation_level>
-//void collide_stream_AA(D2Q9lattice &g, bool even, T ulb, T tau) {
-//  T omega = 1.0 / tau;
-//
-//  auto xs = std::views::iota(0, g.nx);
-//  auto ys = std::views::iota(0, g.ny);
-//  auto ids = std::views::cartesian_product(xs, ys);
-//
-//  std::for_each(std::execution::seq, ids.begin(), ids.end(), [&g, omega, ulb, even](auto idx) {
-//    auto [x, y] = idx;
-//
-//    std::array<T, 9> tmpf{0};
-//    std::array<T, 9> feq{0};
-//    T rho = 0.0, ux = 0.0, uy = 0.0;
-//    for (int i = 0; i < 9; ++i) {
-//      int x_stream = x - g.cx[i];
-//      int y_stream = y - g.cy[i];
-//      if (even) {// pull stream
-//        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-//          tmpf[i] = g.f_data(x_stream, y_stream, i);
-//        } else {
-//          tmpf[i] = g.f_data(x, y, g.opposite[i]) + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
-//        }
-//      } else { // odd
-//        tmpf[i] = g.f_data(x, y, g.opposite[i]);// read-swap
-//      }
-//      rho += tmpf[i];
-//      ux += tmpf[i] * g.cx[i];
-//      uy += tmpf[i] * g.cy[i];
-//    }
-//
-//    // Compute macroscopic density and velocities
-//    ux /= rho;
-//    uy /= rho;
-//
-//    for (int i = 0; i < 9; ++i) {
-//      T cu = g.cx[i] * ux + g.cy[i] * uy;
-//      T u_sq = ux * ux + uy * uy;
-//      T cu_sq = cu * cu;
-//      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
-//      tmpf[i] = tmpf[i] * (1. - omega) + feq[i] * omega;
-//      int x_stream = x + g.cx[i];
-//      int y_stream = y + g.cy[i];
-//      if (even) {//push-swap
-//        if (x_stream >= 0 && x_stream < g.nx && y_stream >= 0 && y_stream < g.ny) {
-//          g.f_data(x_stream, y_stream, g.opposite[i]) = tmpf[i];
-//        } else {
-//          g.f_data(x, y, i) = tmpf[i] + ((y_stream == g.ny) ? -2. * g.invCslb2 * ulb * g.cx[i] * g.w[i] : 0.0);
-//        }
-//      } else { // odd
-//        g.f_data(x, y, i) = tmpf[i];
-//      }
-//    }
-//  });
-//}
-// Initialize function for double shear layer
-// Initialize function for double shear layer
 template <typename T>
 void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) {
   int nx = g.nx;
@@ -535,8 +481,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 1200;
-  int ny = 600;
+  int nx = 2000;
+  int ny = 1000;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -546,13 +492,13 @@ int main() {
   auto xs = std::views::iota(0, g->nx);
   auto ys = std::views::iota(0, g->ny);
   auto is = std::views::iota(0, g->q);
-  auto xis = std::views::cartesian_product(xs, is);
-  auto yis = std::views::cartesian_product(ys, is);
-  auto xys = std::views::cartesian_product(xs, ys);
-  auto xyis = std::views::cartesian_product(xs,ys, is);
+  auto ixs = std::views::cartesian_product(is, xs);
+  auto iys = std::views::cartesian_product(is, ys);
+  auto yxs = std::views::cartesian_product(ys, xs);
+  auto iyxs = std::views::cartesian_product(is,ys, xs);
 
   // nondimentional numbers
-  T Re =10000;
+  T Re =5000;
   T Ma = 0.125;
 
   // reference dimensions
@@ -564,15 +510,15 @@ int main() {
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
   int num_steps = Tlb; 1000;
-  int outputIter = /*50;*/num_steps / 20;
+  int outputIter =num_steps / 3;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
-//  cylinder_flags_initialization(*g);
-  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-10));
+  cylinder_flags_initialization(*g);
+//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-10));
 
 
   // Initialize the D2Q9lattice with the double shear layer
@@ -621,14 +567,14 @@ int main() {
 
     collide_stream_two_populations(*g, ulb, tau);
 
-    std::for_each(std::execution::par_unseq, yis.begin(), yis.end(),
-                  [f = g->f_data, nx, ny](auto yi) {
-                    auto [y, i] = yi;
+    std::for_each(std::execution::par_unseq, iys.begin(), iys.end(),
+                  [f = g->f_data, nx, ny](auto iy) {
+                    auto [i, y] = iy;
                     f(nx - 1, y, i) = f(nx - 2, y, i);
                   });
-    std::for_each(std::execution::par_unseq, xis.begin(), xis.end(),
-                  [f = g->f_data, nx, ny](auto xi) {
-                    auto [x, i] = xi;
+    std::for_each(std::execution::par_unseq, ixs.begin(), ixs.end(),
+                  [f = g->f_data, nx, ny](auto ix) {
+                    auto [i,x] = ix;
                     f(x, ny - 1, i) = f(x, ny - 2, i);
                     f(x, 0, i) = f(x, 1, i);
                   });
