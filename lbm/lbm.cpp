@@ -157,11 +157,11 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   assert(before_cs);
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
-  auto coords = std::views::cartesian_product(xs, ys);
+  auto coords = std::views::cartesian_product(ys, xs);
 
   // Parallel loop to compute moments
   std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, even](auto coord) {
-    auto [x, y] = coord;
+    auto [y, x] = coord;
     T rho = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       int iPop = even ? i : g.opposite[i];
@@ -447,6 +447,79 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
 }
 
 template <typename T>
+void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1, T x2, T y2) {
+    // indexes
+    auto xs = std::views::iota(0, g.nx);
+    auto ys = std::views::iota(0, g.ny);
+    auto is = std::views::iota(0, g.q);
+    auto coords = std::views::cartesian_product(ys, xs);
+
+    T eta_e = (Re * nu) / (r0 * r0);
+
+    int nx = g.nx;
+    int ny = g.ny;
+
+    std::for_each(coords.begin(), coords.end(), [&g, eta_e, r0, x1, y1, x2, y2, nx, ny](auto coord) {
+        auto [y, x] = coord;
+        T rho_val = 1.0; // Initial density value
+        T ux = 0.0;      // Initial x-velocity
+        T uy = 0.0;      // Initial y-velocity
+
+        // Radius and calculations for first monopole (positive vorticity)
+        T rx1 = static_cast<T>(x) - x1;
+        T ry1 = static_cast<T>(y) - y1;
+        T r1_squared = rx1 * rx1 + ry1 * ry1;
+
+        // Radius and calculations for second monopole (negative vorticity)
+        T rx2 = static_cast<T>(x) - x2;
+        T ry2 = static_cast<T>(y) - y2;
+        T r2_squared = rx2 * rx2 + ry2 * ry2;
+
+        // Define the velocities as per the given formulas
+        T u0 = -0.5 * std::abs(eta_e) * (static_cast<T>(y) - y1) * exp(-r1_squared / (r0 * r0))
+               + 0.5 * std::abs(eta_e) * (static_cast<T>(y) - y2) * exp(-r2_squared / (r0 * r0));
+        T v0 =  0.5 * std::abs(eta_e) * (static_cast<T>(x) - x1) * exp(-r1_squared / (r0 * r0))
+                - 0.5 * std::abs(eta_e) * (static_cast<T>(x) - x2) * exp(-r2_squared / (r0 * r0));
+
+        ux = u0;
+        uy = v0;
+
+        // Ensure zero velocities at the boundaries as prescribed
+        if (x == 0 || x == nx - 1 || y == 0 || y == ny - 1) {
+            ux = 0.0;
+            uy = 0.0;
+        }
+
+        // Set lattice node values
+        g.rho_data(x, y) = rho_val;
+        g.velocity_data(x, y, 0) = ux;
+        g.velocity_data(x, y, 1) = uy;
+
+        // Initialize equilibrium distribution functions
+        for (int i = 0; i < 9; ++i) {
+            T cu = g.cx[i] * ux + g.cy[i] * uy;
+            T u_sq = 1.5 * (ux * ux + uy * uy);
+            g.f_data(x, y, i) = g.w[i] * rho_val * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq);
+            g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initially set f_2 equal to f
+
+            // Handle boundary conditions
+            if (x == 0 && g.cx[i] == -1)
+                g.flags_data(x, y, i) = g.hwbb;
+            else if (x == (nx - 1) && g.cx[i] == 1)
+                g.flags_data(x, y, i) = g.hwbb;
+            else if (y == 0 && g.cy[i] == -1)
+                g.flags_data(x, y, i) = g.hwbb;
+            else if (y == (ny - 1) && g.cy[i] == 1)
+                g.flags_data(x, y, i) = g.hwbb;
+            else
+                g.flags_data(x, y, i) = g.bulk;
+        }
+    });
+}
+
+
+
+template <typename T>
 void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) {
   int nx = g.nx;
   int ny = g.ny;
@@ -481,8 +554,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 2000;
-  int ny = 1000;
+  int nx = 500;
+  int ny = 500;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -498,7 +571,7 @@ int main() {
   auto iyxs = std::views::cartesian_product(is,ys, xs);
 
   // nondimentional numbers
-  T Re =5000;
+  T Re =500;
   T Ma = 0.125;
 
   // reference dimensions
@@ -509,15 +582,15 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = Tlb; 1000;
-  int outputIter =num_steps / 3;
+  int num_steps = Tlb*10.;
+  int outputIter =num_steps / 5;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
-  cylinder_flags_initialization(*g);
+  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
 //  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-10));
 
 
