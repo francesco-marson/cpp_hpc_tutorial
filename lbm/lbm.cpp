@@ -67,7 +67,7 @@ void writeVTK2D(
 
     for (const auto& [iy, ix] : grid) {
       for (int ic = 0; ic < num_components; ++ic) {
-        out << field_data(ix, iy, ic) << ' ';
+        out << std::scientific << field_data(ix, iy, ic) << ' ';
       }
       if (num_components < 3) out << 0 << ' ';
       out << '\n';
@@ -101,10 +101,10 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data,rho_data_;
+  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data,rhob_data_;
     // Take a subspan that only considers the first two indices
 // Define the full type for the submdspan
-    exper::mdspan<T, exper::dextents<int, 2>, layout> rho_data;
+    exper::mdspan<T, exper::dextents<int, 2>, layout> rhob_data;
   exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
 
   D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
@@ -114,13 +114,13 @@ struct D2Q9lattice {
     f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, q);
     f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, q);
     velocity_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
-    rho_data_ = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
-    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rho_data_.size(), nx, ny,number_dynamic_scalars);
+    rhob_data_ = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
+    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rhob_data_.size(), nx, ny,number_dynamic_scalars);
 
     flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,q);
 
       // Take the subspan that only considers the first two indexes
-    rho_data = exper::submdspan(rho_data_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
+    rhob_data = exper::submdspan(rhob_data_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
     initialize();
   }
 
@@ -135,16 +135,16 @@ struct D2Q9lattice {
   void initialize() {
     for (int x = 0; x < nx; ++x) {
       for (int y = 0; y < ny; ++y) {
-        T rho_val = 1.0;
+        T rhob_val = 0.0;
         T ux = 0.0;
         T uy = 0.0;
-        rho_data(x, y) = rho_val;
+        rhob_data(x, y) = rhob_val;
         velocity_data(x, y, 0) = ux;
         velocity_data(x, y, 1) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          f_data(x, y, i) = w[i] * rho_val * (1 + cu + 0.5 * cu * cu - u_sq);
+          f_data(x, y, i) = w[i] * (rhob_val+1.0) * (1 + cu + 0.5 * cu * cu - u_sq)-w[i];
           f_data_2(x, y, i) = f_data(x, y, i); // Initialize f_2 the same way as f
         }
       }
@@ -162,14 +162,15 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   // Parallel loop to compute moments
   std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, even](auto coord) {
     auto [y, x] = coord;
-    T rho = 0.0, ux = 0.0, uy = 0.0;
+    T rhob = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       int iPop = even ? i : g.opposite[i];
-      rho += g.f_data(x, y, iPop);
+      rhob += g.f_data(x, y, iPop);
       ux += g.f_data(x, y, iPop) * g.cx[i];
       uy += g.f_data(x, y, iPop) * g.cy[i];
     }
-    g.rho_data(x, y) = rho;
+    g.rhob_data_(x, y, 0) = rhob;
+    T rho = rhob + 1.0;
     g.velocity_data(x, y, 0) = ux / rho;
     g.velocity_data(x, y, 1) = uy / rho;
   });
@@ -400,15 +401,16 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
     auto [y,x] = idx;
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
-    T rho = 0.0, ux = 0.0, uy = 0.0;
+    T rhob = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       tmpf[i] = g.f_data(x, y, i);
-      rho += tmpf[i];
+      rhob += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
     }
 
     // Compute macroscopic density and velocities
+    T rho = rhob +1.0;
     ux /= rho;
     uy /= rho;
 
@@ -418,8 +420,8 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       T cu = g.cx[i] * ux + g.cy[i] * uy;
       T u_sq = ux * ux + uy * uy;
       T cu_sq = cu * cu;
-      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
-      T feq_iopp = g.w[i] * rho * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq);
+      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
       tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
       T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
       int x_stream = x + g.cx[i];
@@ -461,7 +463,7 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
 
     std::for_each(coords.begin(), coords.end(), [&g, eta_e, r0, x1, y1, x2, y2, nx, ny](auto coord) {
         auto [y, x] = coord;
-        T rho_val = 1.0; // Initial density value
+        T rhob_val = 0.0; // Initial density value
         T ux = 0.0;      // Initial x-velocity
         T uy = 0.0;      // Initial y-velocity
 
@@ -491,7 +493,7 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         }
 
         // Set lattice node values
-        g.rho_data(x, y) = rho_val;
+        g.rhob_data_(x, y, 0) = rhob_val;
         g.velocity_data(x, y, 0) = ux;
         g.velocity_data(x, y, 1) = uy;
 
@@ -499,7 +501,7 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         for (int i = 0; i < 9; ++i) {
             T cu = g.cx[i] * ux + g.cy[i] * uy;
             T u_sq = 1.5 * (ux * ux + uy * uy);
-            g.f_data(x, y, i) = g.w[i] * rho_val * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq);
+            g.f_data(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq)-g.w[i];
             g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initially set f_2 equal to f
 
             // Handle boundary conditions
@@ -528,13 +530,13 @@ void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) 
   // Initialize density and velocity fields
   for (int x = 0; x < nx; ++x) {
     for (int y = 0; y < ny; ++y) {
-      T rho_val = 1.0;
+      T rhob_val = 0.0;
 
       // Define velocities based on the double shear layer profile
       T ux = U0 * std::tanh(alpha * (0.25 - std::abs((static_cast<T>(y) / static_cast<T>(ny)) - 0.5)));
       T uy = U0 * delta * std::sin(2.0 * M_PI * (static_cast<T>(x) / static_cast<T>(nx) + 0.25));
 
-      g.rho_data(x, y) = rho_val;
+      g.rhob_data_(x, y, 0) = rhob_val;
       g.velocity_data(x, y, 0) = ux;
       g.velocity_data(x, y, 1) = uy;
 
@@ -542,7 +544,7 @@ void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) 
       for (int i = 0; i < 9; ++i) {
         T cu = g.cx[i] * ux + g.cy[i] * uy;
         T u_sq = 1.5 * (ux * ux + uy * uy);
-        g.f_data(x, y, i) = g.w[i] * rho_val * (1. + 3. * cu + 4.5 * cu * cu - u_sq);
+        g.f_data(x, y, i) = g.w[i] * (rhob_val+(T)1.0) * (1. + 3. * cu + 4.5 * cu * cu - u_sq)-g.w[i];
         g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initialize f_2 the same way as f
       }
     }
@@ -554,8 +556,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 500;
-  int ny = 500;
+  int nx = 2500;
+  int ny = 1000;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -571,7 +573,7 @@ int main() {
   auto iyxs = std::views::cartesian_product(is,ys, xs);
 
   // nondimentional numbers
-  T Re =500;
+  T Re =1500;
   T Ma = 0.125;
 
   // reference dimensions
@@ -590,8 +592,8 @@ int main() {
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
-  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-10));
+//  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
+  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-20));
 
 
   // Initialize the D2Q9lattice with the double shear layer
@@ -616,18 +618,18 @@ int main() {
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
 
       // Access the underlying raw data pointer;
-      D2Q9lattice::Flags* flags_data = g->flags_data.data_handle();
-      auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_data,g->flags_buffer.size());
-      // Cast to `float*`
-      std::vector<T> float_data;
-      std::transform(flags_iterable.begin(),flags_iterable.end(),std::back_inserter(float_data),[](auto&& flag){return static_cast<T>(flag);});
-      // Create the new `mdspan` with `float` type
-      exper::mdspan<T, exper::dextents<int, 3>, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
+//      D2Q9lattice::Flags* flags_data = g->flags_data.data_handle();
+//      auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_data,g->flags_buffer.size());
+//      // Cast to `float*`
+//      std::vector<T> float_data;
+//      std::transform(flags_iterable.begin(),flags_iterable.end(),std::back_inserter(float_data),[](auto&& flag){return static_cast<T>(flag);});
+//      // Create the new `mdspan` with `float` type
+//      exper::mdspan<T, exper::dextents<int, 3>, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
       std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int,3>,layout> > > fields = {
           {"velocity", g->velocity_data},
-//          {"rho", g->rho_data_},
-          {"flags", float_mdspan}
+          {"rhob", g->rhob_data_},
+//          {"flags", float_mdspan}
       };
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
@@ -639,17 +641,18 @@ int main() {
     }
 
     collide_stream_two_populations(*g, ulb, tau);
+    auto& gg = *g;
 
     std::for_each(std::execution::par_unseq, iys.begin(), iys.end(),
-                  [f = g->f_data, nx, ny](auto iy) {
+                  [&gg, nx, ny](auto iy) {
                     auto [i, y] = iy;
-                    f(nx - 1, y, i) = f(nx - 2, y, i);
+                    if (gg.flags_data(nx - 1, y, i) == gg.outlet) gg.f_data(nx - 1, y, i) = gg.f_data(nx - 2, y, i);
                   });
     std::for_each(std::execution::par_unseq, ixs.begin(), ixs.end(),
-                  [f = g->f_data, nx, ny](auto ix) {
+                  [&gg, nx, ny](auto ix) {
                     auto [i,x] = ix;
-                    f(x, ny - 1, i) = f(x, ny - 2, i);
-                    f(x, 0, i) = f(x, 1, i);
+                      if (gg.flags_data(x, ny - 1, i) == gg.outlet) gg.f_data(x, ny - 1, i) = gg.f_data(x, ny - 2, i);
+                      if (gg.flags_data(x, 0, i)      == gg.outlet) gg.f_data(x, 0, i) = gg.f_data(x, 1, i);
                   });
   }
 
