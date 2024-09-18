@@ -12,19 +12,24 @@
 #include <memory> // For std::unique_ptr and std::make_unique
 #include <chrono>
 #include <experimental/mdspan> // Include standard mdspan header
+#include <experimental/linalg>
 #include "statistics.h"
 
 // Define a type alias for convenience
 using T = float;
 namespace exper = std::experimental;
+namespace linalg = std::experimental::linalg;
 using layout = exper::layout_left;
+using rnk2 = exper::dextents<int, 2>;
+using rnk3 = exper::dextents<int, 3>;
+using rnk4 = exper::dextents<int, 4>;
 
 
 template<typename T, typename LayoutPolicy>
 void writeVTK2D(
     const std::string &filename,
     tl::cartesian_product_view<std::ranges::iota_view<int, int>, std::ranges::iota_view<int, int>>grid,
-    std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int, 3>, LayoutPolicy>>> fields,
+    std::vector<std::pair<std::string, exper::mdspan<T, rnk3, LayoutPolicy>>> fields,
     int NX, int NY
 ) {
   std::ofstream out(filename); // Open the file
@@ -101,23 +106,44 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-  exper::mdspan<T, exper::dextents<int,3>,layout> f_data, f_data_2, dynamic_data,velocity_data,rhob_data_;
+  exper::mdspan<T, rnk3,layout> f_data, f_data_2, dynamic_data,velocity_data,rhob_data_;
+
     // Take a subspan that only considers the first two indices
 // Define the full type for the submdspan
-    exper::mdspan<T, exper::dextents<int, 2>, layout> rhob_data;
-  exper::mdspan<Flags, exper::dextents<int,3>,layout> flags_data;
+  exper::mdspan<T, rnk2, layout> rhob_data;
+  exper::mdspan<Flags, rnk3,layout> flags_data;
+
+
+
+    // Storage for filtered fields
+    std::vector<T> vel_filtered_data;
+    std::vector<T> tensor_filtered_data;
+    std::vector<T> m2sgs_data;
+    std::vector<T> dm2sgs_data;
+    exper::mdspan<T, rnk4,layout> m2sgs;
+    exper::mdspan<T, rnk3,layout> dm2sgs;
+    exper::mdspan<T, rnk3, layout> vel_filtered;
+    exper::mdspan<T, rnk4, layout> tensor_filtered;
 
   D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
                          buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0),
-                                                                       flags_buffer(nx * ny * q,bulk)// Adjust buffer size accordingly
-  {
-    f_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data(), nx, ny, q);
-    f_data_2 = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size(), nx, ny, q);
-    velocity_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
-    rhob_data_ = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
-    dynamic_data = exper::mdspan<T, exper::dextents<int,3>,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rhob_data_.size(), nx, ny,number_dynamic_scalars);
+                                                                       flags_buffer(nx * ny * q,bulk),
+                                       vel_filtered_data(nx * ny * 2, 0),tensor_filtered_data(nx * ny * 2 * 2, 0),
+                                       dm2sgs_data(nx * ny * 2, 0),m2sgs_data(nx * ny * 2 * 2, 0)
 
-    flags_data = exper::mdspan<Flags, exper::dextents<int,3>,layout>(flags_buffer.data(), nx, ny,q);
+  {
+      vel_filtered = exper::mdspan<T, rnk3, layout>(vel_filtered_data.data(), nx, ny, 2);
+      tensor_filtered = exper::mdspan<T, rnk4, layout>(tensor_filtered_data.data(), nx, ny, 2, 2);
+      m2sgs = exper::mdspan<T, rnk4, layout>(m2sgs_data.data(), nx, ny, 2, 2);
+      dm2sgs = exper::mdspan<T, rnk3, layout>(dm2sgs_data.data(), nx, ny, 2);
+
+    f_data = exper::mdspan<T, rnk3,layout>(buffer.data(), nx, ny, q);
+    f_data_2 = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size(), nx, ny, q);
+    velocity_data = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
+    rhob_data_ = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
+    dynamic_data = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rhob_data_.size(), nx, ny,number_dynamic_scalars);
+
+    flags_data = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
 
       // Take the subspan that only considers the first two indexes
     rhob_data = exper::submdspan(rhob_data_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
@@ -151,6 +177,128 @@ struct D2Q9lattice {
     }
   }
 };
+
+// Function to apply box filter to the vector field (velocity_data)
+void boxFilterVectorField(const exper::mdspan<T, rnk3, layout>& input,
+                          exper::mdspan<T, rnk3, layout>& output) {
+
+    auto nx = input.extent(0);
+    auto ny = input.extent(1);
+    auto d = input.extent(2);
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(ys, xs);
+
+
+    // Compute the box filter in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&input, &output, d](auto coord) {
+                      auto [y, x] = coord;
+
+                      auto filterSize = 3;
+                      auto halfFilterSize = filterSize / 2;
+                      for (int i = 0; i < d; ++i) {
+                          T sum = 0.0;
+                          int count = 0;
+                          for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
+                              for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
+                                  int nx = std::clamp(x + fx, 0, static_cast<int>(nx) - 1);
+                                  int ny = std::clamp(y + fy, 0, static_cast<int>(ny) - 1);
+                                  sum += input(nx, ny, i);
+                                  ++count;
+                              }
+                          }
+                          output(x, y, i) = 0;sum / static_cast<T>(count);
+                      }
+                  });
+}
+
+// Function to apply box filter to the tensor field
+void boxFilterTensorField(const exper::mdspan<T, rnk4, layout>& input,
+                          exper::mdspan<T, rnk4, layout>& output) {
+
+    auto nx = input.extent(0);
+    auto ny = input.extent(1);
+    auto d1 = input.extent(2);
+    auto d2 = input.extent(3);
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(ys, xs);
+
+
+
+    // Compute the box filter in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&input, &output, d1, d2](auto coord) {
+                      auto [y, x] = coord;
+                      auto filterSize = 3;
+                      auto halfFilterSize = filterSize / 2;
+                      for (int i = 0; i < d1; ++i) {
+                          for (int j = 0; j < d2; ++j) {
+                              T sum = 0.0;
+                              int count = 0;
+                              for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
+                                  for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
+                                      int nx = std::clamp(x + fx, 0, static_cast<int>(nx) - 1);
+                                      int ny = std::clamp(y + fy, 0, static_cast<int>(ny) - 1);
+                                      sum += input(nx, ny, i, j);
+                                      ++count;
+                                  }
+                              }
+                              output(x, y, i, j) = sum / static_cast<T>(count);
+                          }
+                      }
+                  });
+}
+
+// Function to compute gradient of m2sgs
+void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
+                     exper::mdspan<T, rnk3, layout>& dm2sgs) {
+
+    auto nx = m2sgs.extent(0);
+    auto ny = m2sgs.extent(1);
+
+    // Check extents matching
+    assert(nx == dm2sgs.extent(0) && ny == dm2sgs.extent(1));
+
+    // Cartesian product of indexes
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto msgs_is = std::views::iota(0, 2); // assuming m2sgs has 2x2 matrices, i.e., i and j are in {0,1}
+    auto xys = std::views::cartesian_product(msgs_is, ys, xs);
+
+    // Compute the gradient in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&dm2sgs, &m2sgs, nx, ny](auto coord) {
+                      auto [msgs_i, y, x] = coord;
+                      T grad_x = 0.0;
+                      T grad_y = 0.0;
+
+                      // 6th order finite differences coefficients
+                      constexpr T coeff[4] = {1.0 / 60.0, -3.0 / 20.0, 3.0 / 4.0, 0.0};
+
+                      // Calculate gradient in x direction for m2sgs(x, y, msgs_i, 0)
+                      for (int k = 1; k <= 3; ++k) {
+                          int xp_k = (x + k + nx) % nx;
+                          int xm_k = (x - k + nx) % nx;
+
+                          grad_x += coeff[k - 1] * (m2sgs(xp_k, y, msgs_i, 0) - m2sgs(xm_k, y, msgs_i, 0));
+                      }
+                      grad_x /= 2; // Because we consider central difference
+
+                      // Calculate gradient in y direction for m2sgs(x, y, msgs_i, 1)
+                      for (int k = 1; k <= 3; ++k) {
+                          int yp_k = (y + k + ny) % ny;
+                          int ym_k = (y - k + ny) % ny;
+
+                          grad_y += coeff[k - 1] * (m2sgs(x, yp_k, msgs_i, 1) - m2sgs(x, ym_k, msgs_i, 1));
+                      }
+                      grad_y /= 2; // Because we consider central difference
+
+                      // Sum both derivatives and store them in dm2sgs(x, y, msgs_i)
+                      dm2sgs(x, y, msgs_i) = grad_x + grad_y;
+                  });
+}
 
 // Compute the moments of populations to populate density and velocity vectors in D2Q9lattice
 void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
@@ -478,9 +626,9 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         T r2_squared = rx2 * rx2 + ry2 * ry2;
 
         // Define the velocities as per the given formulas
-        T u0 = -0.5 * std::abs(eta_e) * (static_cast<T>(y) - y1) * exp(-r1_squared / (r0 * r0))
-               + 0.5 * std::abs(eta_e) * (static_cast<T>(y) - y2) * exp(-r2_squared / (r0 * r0));
-        T v0 =  0.5 * std::abs(eta_e) * (static_cast<T>(x) - x1) * exp(-r1_squared / (r0 * r0))
+        T u0 =  - 0.5 * std::abs(eta_e) * (static_cast<T>(y) - y1) * exp(-r1_squared / (r0 * r0))
+                + 0.5 * std::abs(eta_e) * (static_cast<T>(y) - y2) * exp(-r2_squared / (r0 * r0));
+        T v0 =    0.5 * std::abs(eta_e) * (static_cast<T>(x) - x1) * exp(-r1_squared / (r0 * r0))
                 - 0.5 * std::abs(eta_e) * (static_cast<T>(x) - x2) * exp(-r2_squared / (r0 * r0));
 
         ux = u0;
@@ -603,6 +751,9 @@ int main() {
   auto start_time = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> output_time(0.0);
 
+
+
+
   // Loop over time steps
   for (int t = 0; t < num_steps; ++t) {
 
@@ -624,13 +775,25 @@ int main() {
 //      std::vector<T> float_data;
 //      std::transform(flags_iterable.begin(),flags_iterable.end(),std::back_inserter(float_data),[](auto&& flag){return static_cast<T>(flag);});
 //      // Create the new `mdspan` with `float` type
-//      exper::mdspan<T, exper::dextents<int, 3>, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
+//      exper::mdspan<T, rnk3, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
-      std::vector<std::pair<std::string, exper::mdspan<T, exper::dextents<int,3>,layout> > > fields = {
-          {"velocity", g->velocity_data},
-          {"rhob", g->rhob_data_},
-//          {"flags", float_mdspan}
-      };
+        // Compute gradient
+        computeGradient(g->m2sgs, g->dm2sgs);
+        // Apply box filters
+        boxFilterVectorField(g->velocity_data, g->vel_filtered);
+//        boxFilterTensorField(g->m2sgs, tensor_filtered);
+
+        // Prepare fields for VTK output
+        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> fields = {
+                {"velocity", g->velocity_data},
+                {"dm2sgs", g->dm2sgs},
+                {"rhob", g->rhob_data_},
+                {"filtered_velocity", g->vel_filtered}
+        };
+
+        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
+                {"filtered_tensor", g->dm2sgs}
+        };
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
