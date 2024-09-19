@@ -617,8 +617,8 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_data(x,y,i) == g.hwbb) {
           T q = g.dynamic_data(x,y,i)/g.cnorm[i];
-        g.f_data_2(x, y, iopp) = tmpf[i];
-//          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
+//        g.f_data_2(x, y, iopp) = tmpf[i];
+          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
       } else if (g.flags_data(x,y,i) == g.inlet) {
         g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_data(x,y,i) == g.outlet) {
@@ -824,16 +824,22 @@ int main() {
 //                {"dm2sgs", g->dm2sgs},
                 {"rhob", g->rhob_data_},
                 {"filtered_velocity", g->vel_filtered},
-                {"filtered_tensor", g->dm2sgs}
+                {"dm2sgs", g->dm2sgs}
         };
 
-//        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
-//                {"filtered_tensor", g->dm2sgs}
-//        };
+
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
       writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
+
+        computeM2sgs(g->vel_filtered, g->dm2sgs,g->m2sgs);
+        computeGradient(g->m2sgs, g->dm2sgs);
+        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
+                {"dudm2sgs", g->dm2sgs}
+        };
+
+        writeVTK2D(filename+"-2", std::views::cartesian_product(ys, xs), tensor_fields, nx, ny);
       auto after_out = std::chrono::high_resolution_clock::now();
 
       output_time += after_out - before_out;
