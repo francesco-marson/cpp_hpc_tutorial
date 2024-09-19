@@ -259,6 +259,33 @@ void boxFilterTensorField(const exper::mdspan<T, rnk4, layout>& input,
                   });
 }
 
+// New computeM2sgs function
+auto computeM2sgs(const exper::mdspan<T, rnk3, layout>& vel, const exper::mdspan<T, rnk3, layout>& vel_filtered,
+                  exper::mdspan<T, rnk4, layout>& m2sgs)->void {
+    auto nx = vel.extent(0);
+    auto ny = vel.extent(1);
+    auto d = vel.extent(2);
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(ys, xs);
+
+    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&vel, &vel_filtered, &m2sgs, d](auto coord) {
+        auto [y, x] = coord;
+        for (int i = 0; i < d; ++i) {
+            for (int j = 0; j < d; ++j) {
+                auto vel_vec_i = vel(x, y, i);
+                auto vel_vec_j = vel(x, y, j);
+                auto filtered_vec_i = vel_filtered(x, y, i);
+                auto filtered_vec_j = vel_filtered(x, y, j);
+
+                // Using NVidia's std::experimental::linalg to compute matrix operations:
+                m2sgs(x, y, i, j) = vel_vec_i * vel_vec_j - filtered_vec_i * filtered_vec_j;
+            }
+        }
+//        linalg::matrix_product( std::execution::par, exper::submdspan(vel,x,y,expr::full_extent), exper::submdspan(vel,x,y,expr::full_extent), C );
+    });
+}
+
 // Function to compute gradient of m2sgs
 void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
                      exper::mdspan<T, rnk3, layout>& dm2sgs) {
@@ -786,22 +813,23 @@ int main() {
 //      exper::mdspan<T, rnk3, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
         // Compute gradient
-//        computeGradient(g->m2sgs, g->dm2sgs);
         // Apply box filters
         boxFilterVectorField(g->velocity_data, g->vel_filtered);
-//        boxFilterTensorField(g->m2sgs, tensor_filtered);
+        computeM2sgs(g->velocity_data, g->vel_filtered,g->m2sgs);
+        computeGradient(g->m2sgs, g->dm2sgs);
 
         // Prepare fields for VTK output
         std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> fields = {
                 {"velocity", g->velocity_data},
 //                {"dm2sgs", g->dm2sgs},
                 {"rhob", g->rhob_data_},
-                {"filtered_velocity", g->vel_filtered}
-        };
-
-        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
+                {"filtered_velocity", g->vel_filtered},
                 {"filtered_tensor", g->dm2sgs}
         };
+
+//        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
+//                {"filtered_tensor", g->dm2sgs}
+//        };
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
