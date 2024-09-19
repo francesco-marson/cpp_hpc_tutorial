@@ -71,10 +71,11 @@ void writeVTK2D(
     }
 
     for (const auto& [iy, ix] : grid) {
-      for (int ic = 0; ic < num_components; ++ic) {
+        out << std::scientific << field_data(ix, iy, 0) << ' ';
+      for (int ic = 1; ic < num_components; ++ic) {
         out << std::scientific << field_data(ix, iy, ic) << ' ';
       }
-      if (num_components < 3) out << 0 << ' ';
+      if (num_components < 3 and num_components not_eq 0) out << 0 << ' ';
       out << '\n';
     }
   }
@@ -182,33 +183,40 @@ struct D2Q9lattice {
 void boxFilterVectorField(const exper::mdspan<T, rnk3, layout>& input,
                           exper::mdspan<T, rnk3, layout>& output) {
 
-    auto nx = input.extent(0);
-    auto ny = input.extent(1);
-    auto d = input.extent(2);
-    auto xs = std::views::iota(0, nx);
-    auto ys = std::views::iota(0, ny);
+    int NX = input.extent(0);
+    int NY = input.extent(1);
+    int d = input.extent(2);
+    auto xs = std::views::iota(0, NX);
+    auto ys = std::views::iota(0, NY);
     auto xys = std::views::cartesian_product(ys, xs);
 
 
     // Compute the box filter in parallel
-    std::for_each(std::execution::par, xys.begin(), xys.end(),
-                  [&input, &output, d](auto coord) {
+    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(),
+                  [&input, &output, d, NX, NY](auto coord) {
                       auto [y, x] = coord;
 
-                      auto filterSize = 3;
+                      auto filterSize = 21;
                       auto halfFilterSize = filterSize / 2;
                       for (int i = 0; i < d; ++i) {
                           T sum = 0.0;
                           int count = 0;
                           for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
                               for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
-                                  int nx = std::clamp(x + fx, 0, static_cast<int>(nx) - 1);
-                                  int ny = std::clamp(y + fy, 0, static_cast<int>(ny) - 1);
+                                  int nx = x + fx;
+                                  int ny = y + fy;
+
+                                  // Ensure nx and ny are within bounds
+                                  if (nx < 0) nx = 0;
+                                  if (ny < 0) ny = 0;
+                                  if (nx >= NX) nx = NX - 1;
+                                  if (ny >= NY) ny = NY - 1;
+
                                   sum += input(nx, ny, i);
                                   ++count;
                               }
                           }
-                          output(x, y, i) = 0;sum / static_cast<T>(count);
+                          output(x, y, i) = sum / static_cast<T>(count);
                       }
                   });
 }
@@ -704,8 +712,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 2500;
-  int ny = 1000;
+  int nx = 1500;
+  int ny = 500;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -778,7 +786,7 @@ int main() {
 //      exper::mdspan<T, rnk3, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
         // Compute gradient
-        computeGradient(g->m2sgs, g->dm2sgs);
+//        computeGradient(g->m2sgs, g->dm2sgs);
         // Apply box filters
         boxFilterVectorField(g->velocity_data, g->vel_filtered);
 //        boxFilterTensorField(g->m2sgs, tensor_filtered);
@@ -786,7 +794,7 @@ int main() {
         // Prepare fields for VTK output
         std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> fields = {
                 {"velocity", g->velocity_data},
-                {"dm2sgs", g->dm2sgs},
+//                {"dm2sgs", g->dm2sgs},
                 {"rhob", g->rhob_data_},
                 {"filtered_velocity", g->vel_filtered}
         };
