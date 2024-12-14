@@ -229,26 +229,35 @@ void boxFilterTensorField(const exper::mdspan<T, rnk4, layout>& input,
     auto ny = input.extent(1);
     auto d1 = input.extent(2);
     auto d2 = input.extent(3);
-    auto xs = std::views::iota(0, nx);
-    auto ys = std::views::iota(0, ny);
-    auto xys = std::views::cartesian_product(ys, xs);
-
-
+    auto xs = std::views::iota(0, static_cast<int>(nx));
+    auto ys = std::views::iota(0, static_cast<int>(ny));
+    auto xys = std::views::cartesian_product(xs, ys);
 
     // Compute the box filter in parallel
     std::for_each(std::execution::par, xys.begin(), xys.end(),
                   [&input, &output, d1, d2](auto coord) {
-                      auto [y, x] = coord;
-                      auto filterSize = 3;
+                      auto [x, y] = coord;  // Note: Changed the order here to (x, y)
+                      auto filterSize = 21;
                       auto halfFilterSize = filterSize / 2;
+                      int max_x = static_cast<int>(input.extent(0)) - 1;
+                      int max_y = static_cast<int>(input.extent(1)) - 1;
+
                       for (int i = 0; i < d1; ++i) {
                           for (int j = 0; j < d2; ++j) {
                               T sum = 0.0;
                               int count = 0;
                               for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
                                   for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
-                                      int nx = std::clamp(x + fx, 0, static_cast<int>(nx) - 1);
-                                      int ny = std::clamp(y + fy, 0, static_cast<int>(ny) - 1);
+                                      int nx = x + fx;
+                                      int ny = y + fy;
+
+                                      // Manually clamp to the valid range
+                                      if (nx < 0) nx = 0;
+                                      else if (nx > max_x) nx = max_x;
+
+                                      if (ny < 0) ny = 0;
+                                      else if (ny > max_y) ny = max_y;
+
                                       sum += input(nx, ny, i, j);
                                       ++count;
                                   }
@@ -260,26 +269,50 @@ void boxFilterTensorField(const exper::mdspan<T, rnk4, layout>& input,
 }
 
 // New computeM2sgs function
-auto computeM2sgs(const exper::mdspan<T, rnk3, layout>& vel, const exper::mdspan<T, rnk3, layout>& vel_filtered,
-                  exper::mdspan<T, rnk4, layout>& m2sgs)->void {
-    auto nx = vel.extent(0);
-    auto ny = vel.extent(1);
-    auto d = vel.extent(2);
+auto columnXrow(const exper::mdspan<T, rnk3, layout>& vel1,const exper::mdspan<T, rnk3, layout>& vel2, exper::mdspan<T, rnk4, layout>& m2sgs)->void {
+    auto nx = vel1.extent(0);
+    auto ny = vel1.extent(1);
+    auto d = vel1.extent(2);
     auto xs = std::views::iota(0, nx);
     auto ys = std::views::iota(0, ny);
     auto xys = std::views::cartesian_product(ys, xs);
 
-    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&vel, &vel_filtered, &m2sgs, d](auto coord) {
+    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&vel1,&vel2, &m2sgs, d](auto coord) {
         auto [y, x] = coord;
         for (int i = 0; i < d; ++i) {
             for (int j = 0; j < d; ++j) {
-                auto vel_vec_i = vel(x, y, i);
-                auto vel_vec_j = vel(x, y, j);
+                auto vel_vec_i = vel1(x, y, i);
+                auto vel_vec_j = vel2(x, y, j);
+//                auto filtered_vec_i = vel_filtered(x, y, i);
+//                auto filtered_vec_j = vel_filtered(x, y, j);
+
+                // Using NVidia's std::experimental::linalg to compute matrix operations:
+                m2sgs(x, y, i, j) = vel_vec_i * vel_vec_j;
+            }
+        }
+//        linalg::matrix_product( std::execution::par, exper::submdspan(vel,x,y,expr::full_extent), exper::submdspan(vel,x,y,expr::full_extent), C );
+    });
+}
+
+// New computeM2sgs function
+auto computeM2sgs(const exper::mdspan<T, rnk4, layout>& fuu, const exper::mdspan<T, rnk3, layout>& vel_filtered,
+                  exper::mdspan<T, rnk4, layout>& m2sgs)->void {
+    auto nx = vel_filtered.extent(0);
+    auto ny = vel_filtered.extent(1);
+    auto d  = vel_filtered.extent(2);
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(ys, xs);
+
+    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&fuu, &vel_filtered, &m2sgs, d](auto coord) {
+        auto [y, x] = coord;
+        for (int i = 0; i < d; ++i) {
+            for (int j = 0; j < d; ++j) {
                 auto filtered_vec_i = vel_filtered(x, y, i);
                 auto filtered_vec_j = vel_filtered(x, y, j);
 
                 // Using NVidia's std::experimental::linalg to compute matrix operations:
-                m2sgs(x, y, i, j) = vel_vec_i * vel_vec_j - filtered_vec_i * filtered_vec_j;
+                m2sgs(x, y, i, j) = fuu(x,y,i,j) - filtered_vec_i * filtered_vec_j;
             }
         }
 //        linalg::matrix_product( std::execution::par, exper::submdspan(vel,x,y,expr::full_extent), exper::submdspan(vel,x,y,expr::full_extent), C );
@@ -739,21 +772,25 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 1500;
-  int ny = 500;
+  int nx = 1800;
+  int ny = 800;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
   auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
+    auto& gg = *g;
 
   // indexes
   auto xs = std::views::iota(0, g->nx);
   auto ys = std::views::iota(0, g->ny);
   auto is = std::views::iota(0, g->q);
+  auto a1s = std::views::iota(0, 2);
+  auto a2s = std::views::iota(0, 2);
   auto ixs = std::views::cartesian_product(is, xs);
   auto iys = std::views::cartesian_product(is, ys);
   auto yxs = std::views::cartesian_product(ys, xs);
   auto iyxs = std::views::cartesian_product(is,ys, xs);
+  auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
   T Re =1500;
@@ -815,7 +852,9 @@ int main() {
         // Compute gradient
         // Apply box filters
         boxFilterVectorField(g->velocity_data, g->vel_filtered);
-        computeM2sgs(g->velocity_data, g->vel_filtered,g->m2sgs);
+        columnXrow(g->velocity_data,g->velocity_data,g->m2sgs);
+        boxFilterTensorField(g->m2sgs,g->tensor_filtered);
+        computeM2sgs(g->tensor_filtered, g->vel_filtered,g->m2sgs);
         computeGradient(g->m2sgs, g->dm2sgs);
 
         // Prepare fields for VTK output
@@ -832,21 +871,28 @@ int main() {
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
       writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
-
-        computeM2sgs(g->vel_filtered, g->dm2sgs,g->m2sgs);
+//        auto transposed = linalg::transposed(g->dm2sgs);
+        columnXrow(g->vel_filtered, g->dm2sgs,g->m2sgs);
+        std::for_each(std::execution::par_unseq, a1a2yxs.begin(), a1a2yxs.end(),
+                      [&gg, nx, ny](auto c) {
+                          auto [a1,a2,y,x] = c;
+//                          exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent) =
+//                                  exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent)
+//                                  +linalg::transposed(exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent));
+                          gg.m2sgs(x,y,a1,a2) = gg.m2sgs(x,y,a1,a2) + gg.m2sgs(x,y,a2,a1);
+                      });
         computeGradient(g->m2sgs, g->dm2sgs);
         std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
                 {"dudm2sgs", g->dm2sgs}
         };
 
-        writeVTK2D(filename+"-2", std::views::cartesian_product(ys, xs), tensor_fields, nx, ny);
+        writeVTK2D("output-2_" + std::to_string(t) + ".vtk", std::views::cartesian_product(ys, xs), tensor_fields, nx, ny);
       auto after_out = std::chrono::high_resolution_clock::now();
 
       output_time += after_out - before_out;
     }
 
     collide_stream_two_populations(*g, ulb, tau);
-    auto& gg = *g;
 
     std::for_each(std::execution::par_unseq, iys.begin(), iys.end(),
                   [&gg, nx, ny](auto iy) {
