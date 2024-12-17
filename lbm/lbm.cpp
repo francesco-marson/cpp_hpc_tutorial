@@ -143,7 +143,7 @@ struct D2Q9lattice {
   std::vector<Flags> flags_buffer;
     exper::mdspan<T, rnk2, layout> rhob_matrix;
   exper::mdspan<T, rnk3,layout> f_matrix, f_matrix_2, dynamic_matrix,velocity_matrix,rhob_matrix_;
-  exper::mdspan<T, rnk4,layout> stresses_matrix;
+  exper::mdspan<T, rnk4,layout> strain_matrix;
 
     // Take a subspan that only considers the first two indices
 // Define the full type for the submdspan
@@ -163,7 +163,7 @@ struct D2Q9lattice {
     auto dynamic_matrix_starting_index = rhob_matrix_starting_index + rhob_matrix_.size();
     dynamic_matrix = exper::mdspan<T, rnk3,layout>(dynamic_matrix_starting_index, nx, ny,number_dynamic_scalars);
     auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
-    stresses_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
+    strain_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
 
     flags_matrix = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
 
@@ -245,7 +245,7 @@ struct D2Q37lattice {
     std::vector<Flags> flags_buffer;
     exper::mdspan<T, rnk2, layout> rhob_matrix;
     exper::mdspan<T, rnk3, layout> f_matrix, f_matrix_2, dynamic_matrix, velocity_matrix, rhob_matrix_;
-    exper::mdspan<T, rnk4, layout> stresses_matrix;
+    exper::mdspan<T, rnk4, layout> strain_matrix;
 
     // Define the full type for the submdspan
     exper::mdspan<Flags, rnk3, layout> flags_matrix;
@@ -267,7 +267,7 @@ struct D2Q37lattice {
         dynamic_matrix = exper::mdspan<T, rnk3, layout>(dynamic_matrix_starting_index, nx, ny, number_dynamic_scalars);
 
         auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
-        stresses_matrix = exper::mdspan<T, rnk4, layout>(stresses_starting_index, nx, ny, 2, 2);
+        strain_matrix = exper::mdspan<T, rnk4, layout>(stresses_starting_index, nx, ny, 2, 2);
 
         flags_matrix = exper::mdspan<Flags, rnk3, layout>(flags_buffer.data(), nx, ny, q);
 
@@ -355,9 +355,8 @@ void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
 }
 
 // Function to compute stress tensor components given the velocity field
-void computeStressTensor(const exper::mdspan<T, rnk3, layout>& velocity,
-                         exper::mdspan<T, rnk4, layout>& stress_tensor,
-                         T viscosity) {
+void computeStrainTensor(const exper::mdspan<T, rnk3, layout>& velocity,
+                         exper::mdspan<T, rnk4, layout>& stress_tensor) {
 
     auto nx = velocity.extent(0);
     auto ny = velocity.extent(1);
@@ -372,7 +371,7 @@ void computeStressTensor(const exper::mdspan<T, rnk3, layout>& velocity,
 
     // Compute the stress tensor in parallel
     std::for_each(std::execution::par, xys.begin(), xys.end(),
-                  [&stress_tensor, &velocity, nx, ny, viscosity](auto coord) {
+                  [&stress_tensor, &velocity, nx, ny](auto coord) {
                       auto [x, y] = coord;
                       T du_dx = 0.0;
                       T du_dy = 0.0;
@@ -405,9 +404,9 @@ void computeStressTensor(const exper::mdspan<T, rnk3, layout>& velocity,
                       dv_dy /= 2; // Because we consider central difference
 
                       // Compute the components of the stress tensor
-                      stress_tensor(x, y, 0, 0) = viscosity * 2 * du_dx;      // Tau_xx
-                      stress_tensor(x, y, 1, 1) = viscosity * 2 * dv_dy;      // Tau_yy
-                      stress_tensor(x, y, 0, 1) = viscosity * (du_dy + dv_dx); // Tau_xy
+                      stress_tensor(x, y, 0, 0) = 2 * du_dx;      // Tau_xx
+                      stress_tensor(x, y, 1, 1) = 2 * dv_dy;      // Tau_yy
+                      stress_tensor(x, y, 0, 1) = (du_dy + dv_dx); // Tau_xy
                       stress_tensor(x, y, 1, 0) = stress_tensor(x, y, 0, 1);  // Tau_yx = Tau_xy
                   });
 }
@@ -699,7 +698,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 
 
   // Parallel loop ensuring thread safety
-  std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega, ulb](auto idx) {
+  std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega,tau, ulb](auto idx) {
     auto [y,x] = idx;
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
@@ -720,9 +719,9 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     T rho = rhob +1.0;
 //    ux /= rho;
 //    uy /= rho;
-    uxx += g.stresses_matrix(x,y,0,0);
-    uxy += g.stresses_matrix(x,y,0,1);
-    uyy += g.stresses_matrix(x,y,1,1);
+    uxx += tau*g.cslb2*rho*g.strain_matrix(x,y,0,0);
+    uxy += tau*g.cslb2*rho*g.strain_matrix(x,y,0,1);
+    uyy += tau*g.cslb2*rho*g.strain_matrix(x,y,1,1);
     uxx /= rho;
     uxy /= rho;
     uyy /= rho;
@@ -737,13 +736,13 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T cu_sq = cu * cu;
           T cu_cub = cu * cu_sq;
           T cu_four = cu_sq * cu_sq;
-//          u_sq = uxx + uyy;
-//          cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
+          u_sq = uxx + uyy;
+          cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
 
 //          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
 
 
-      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu * cu - 0.5*g.invCslb2*u_sq)-g.w[i];
+      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 
           // Collide step
@@ -887,7 +886,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
@@ -903,7 +902,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =50000;
+  T Re =1;
   T Ma = 0.1;
 
   // reference dimensions
@@ -948,7 +947,7 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStressTensor(g->velocity_matrix,g->stresses_matrix,nu);
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix);
     if (t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
@@ -965,7 +964,7 @@ int main() {
         std::vector<std::pair<std::string, MdspanVariant<T, layout>>> fields = {
                 {"velocity", g->velocity_matrix},
                 {"rhob", g->rhob_matrix},
-                {"stresses", g->stresses_matrix}
+                {"stresses", g->strain_matrix}
         };
 //        fields.push_back(std::make_pair("velocity", g->velocity_matrix));
 
