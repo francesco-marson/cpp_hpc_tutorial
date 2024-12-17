@@ -200,7 +200,7 @@ struct D2Q9lattice {
   }
 };
 
-template <typename T>
+
 struct D2Q37lattice {
     enum Flags { bulk, hwbb, inlet, outlet, symmetry };
     int nx, ny;
@@ -236,10 +236,10 @@ struct D2Q37lattice {
     const std::array<int, 37> opposite = {0, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, \
 35, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18};
 
-    T cslb = 1. / sqrt(3.);
-    T cslb2 = cslb * cslb;
-    T invCslb = 1. / cslb;
-    T invCslb2 = invCslb * invCslb;
+    T cslb2 = 1. / (1.19697977039307435897239 * 1.19697977039307435897239);
+    T cslb = sqrt(cslb2);
+    T invCslb2 = 1.19697977039307435897239 * 1.19697977039307435897239;
+    T invCslb = sqrt(invCslb2);
 
     std::vector<T> buffer;
     std::vector<Flags> flags_buffer;
@@ -710,9 +710,9 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      rhob += tmpf[i];
 //      ux += tmpf[i] * g.cx[i];
 //      uy += tmpf[i] * g.cy[i];
-      uxx += tmpf[i] * g.cx[i]* g.cx[i];
-      uyy += tmpf[i] * g.cy[i]* g.cy[i];
-      uxy += tmpf[i] * g.cx[i]* g.cy[i];
+      uxx += (tmpf[i]+g.w[i]) * g.cx[i]* g.cx[i];
+      uyy += (tmpf[i]+g.w[i]) * g.cy[i]* g.cy[i];
+      uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
     }
 
     // Compute macroscopic density and velocities
@@ -728,8 +728,6 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     uyy /= rho;
     ux = g.velocity_matrix(x,y,0);
     uy = g.velocity_matrix(x,y,1);
-//        u_sq = uxx + uyy;
-//        cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
 
     // Compute equilibrium distributions
       for (int i = 0; i < g.q; ++i) {
@@ -739,11 +737,13 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T cu_sq = cu * cu;
           T cu_cub = cu * cu_sq;
           T cu_four = cu_sq * cu_sq;
+//          u_sq = uxx + uyy;
+//          cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
 
 //          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
 
 
-      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 
           // Collide step
@@ -903,8 +903,8 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =10000;
-  T Ma = 0.125;
+  T Re =50000;
+  T Ma = 0.1;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
@@ -914,8 +914,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = /*100;*/Tlb*10.;
-  int outputIter = num_steps / 5;
+  int num_steps = /*100;*/Tlb;
+  int outputIter = num_steps / 60;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
@@ -927,7 +927,7 @@ int main() {
 
 
   // Initialize the D2Q9lattice with the double shear layer
-  initializeDoubleShearLayer(*g, ulb,(T)10000.,(T)0.1);
+  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
