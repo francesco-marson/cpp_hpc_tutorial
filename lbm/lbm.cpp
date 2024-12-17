@@ -743,7 +743,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
 
 
-      feq[i] = g.w[i] * rho * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu * cu - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 
           // Collide step
@@ -826,8 +826,8 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         // Initialize equilibrium distribution functions
         for (int i = 0; i < g.q; ++i) {
             T cu = g.cx[i] * ux + g.cy[i] * uy;
-            T u_sq = 1.5 * (ux * ux + uy * uy);
-            g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq)-g.w[i];
+            T u_sq =  (ux * ux + uy * uy);
+            g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu * cu - 0.5*g.invCslb2 *u_sq)-g.w[i];
             g.f_matrix_2(x, y, i) = g.f_matrix(x, y, i); // Initially set f_2 equal to f
 
             // Handle boundary conditions
