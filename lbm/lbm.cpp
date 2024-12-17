@@ -124,9 +124,10 @@ struct D2Q9lattice {
   const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   const std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
   const std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  static constexpr std::array<T, 9> cnormSqrt = {0, 1, 1, 1, 1, 2, 2, 2, 2};
   const std::array<T, 9> cnorm = {0, 1, 1, 1, 1, sqrt((T)2), sqrt((T)2), sqrt((T)2), sqrt((T)2)};
-  const int d = 2;
-  const int q = 9;
+  static constexpr int d = 2;
+  static constexpr int q = 9;
   const int number_dynamic_scalars = q;
   const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
   // Precomputed indices for 90° rotations
@@ -198,6 +199,111 @@ struct D2Q9lattice {
     }
   }
 };
+
+template <typename T>
+struct D2Q37lattice {
+    enum Flags { bulk, hwbb, inlet, outlet, symmetry };
+    int nx, ny;
+    const T llb;
+    const T w[37] = {
+            0.23315066913235250228650, 0.00028341425299419821740, 0.00535304900051377523273,
+            0.05766785988879488203006, 0.00101193759267357547541, 0.00535304900051377523273,
+            0.00028341425299419821740, 0.10730609154221900241246, 0.01420821615845075026469,
+            0.00024530102775771734547, 0.00028341425299419821740, 0.00535304900051377523273,
+            0.05766785988879488203006, 0.00101193759267357547541, 0.00535304900051377523273,
+            0.00028341425299419821740, 0.10730609154221900241246, 0.01420821615845075026469,
+            0.00024530102775771734547, 0.00028341425299419821740, 0.00535304900051377523273,
+            0.05766785988879488203006, 0.00101193759267357547541, 0.00535304900051377523273,
+            0.00028341425299419821740, 0.10730609154221900241246, 0.01420821615845075026469,
+            0.00024530102775771734547, 0.00028341425299419821740, 0.00535304900051377523273,
+            0.05766785988879488203006, 0.00101193759267357547541, 0.00535304900051377523273,
+            0.00028341425299419821740, 0.10730609154221900241246, 0.01420821615845075026469,
+            0.00024530102775771734547};
+    const std::array<int, 37> cx = {0, -1, -1, -1, -2, -2, -3, -1, -2, -3, -3, -2, -1, -2, -1, -1, 0, 0, \
+0, 1, 1, 1, 2, 2, 3, 1, 2, 3, 3, 2, 1, 2, 1, 1, 0, 0, 0};
+    const std::array<int, 37> cy = {0, 3, 2, 1, 2, 1, 1, 0, 0, 0, -1, -1, -1, -2, -2, -3, -1, -2, -3, \
+-3, -2, -1, -2, -1, -1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 1, 2, 3};
+    const std::array<T, 37> cnormSqr = {
+            0,  10, 5, 2, 8, 5,  10, 1, 4, 9,  10, 5, 2, 8, 5,  10, 1, 4, 9,
+            10, 5,  2, 8, 5, 10, 1,  4, 9, 10, 5,  2, 8, 5, 10, 1,  4, 9};
+    const std::array<T, 37> cnorm = {0,sqrt(10),sqrt(5),sqrt(2),2*sqrt(2),sqrt(5),sqrt(10),1,2,3,
+                                     sqrt(10),sqrt(5),sqrt(2),2*sqrt(2),sqrt(5),sqrt(10),1,2,3,
+                                     sqrt(10),sqrt(5),sqrt(2),2*sqrt(2),sqrt(5),sqrt(10),1,2,3,
+                                     sqrt(10),sqrt(5),sqrt(2),2*sqrt(2),sqrt(5),sqrt(10),1,2,3};
+    const int d = 2;
+    const int q = 37;
+    const int number_dynamic_scalars = q;
+    const std::array<int, 37> opposite = {0, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, \
+35, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18};
+
+    T cslb = 1. / sqrt(3.);
+    T cslb2 = cslb * cslb;
+    T invCslb = 1. / cslb;
+    T invCslb2 = invCslb * invCslb;
+
+    std::vector<T> buffer;
+    std::vector<Flags> flags_buffer;
+    exper::mdspan<T, rnk2, layout> rhob_matrix;
+    exper::mdspan<T, rnk3, layout> f_matrix, f_matrix_2, dynamic_matrix, velocity_matrix, rhob_matrix_;
+    exper::mdspan<T, rnk4, layout> stresses_matrix;
+
+    // Define the full type for the submdspan
+    exper::mdspan<Flags, rnk3, layout> flags_matrix;
+
+    D2Q37lattice(int nx, int ny, T llb)
+            : nx(nx), ny(ny), llb(llb),
+              buffer(nx * ny * q * 2 + nx * ny * 3 + nx * ny * number_dynamic_scalars + nx * ny * 4, 1.0),
+              flags_buffer(nx * ny * q, bulk)
+    {
+        f_matrix = exper::mdspan<T, rnk3, layout>(buffer.data(), nx, ny, q);
+        f_matrix_2 = exper::mdspan<T, rnk3, layout>(buffer.data() + f_matrix.size(), nx, ny, q);
+        auto velocity_matrix_starting_index = buffer.data() + f_matrix.size() + f_matrix_2.size();
+        velocity_matrix = exper::mdspan<T, rnk3, layout>(velocity_matrix_starting_index, nx, ny, d);
+
+        auto rhob_matrix_starting_index = velocity_matrix_starting_index + velocity_matrix.size();
+        rhob_matrix_ = exper::mdspan<T, rnk3, layout>(rhob_matrix_starting_index, nx, ny, 0);
+
+        auto dynamic_matrix_starting_index = rhob_matrix_starting_index + rhob_matrix_.size();
+        dynamic_matrix = exper::mdspan<T, rnk3, layout>(dynamic_matrix_starting_index, nx, ny, number_dynamic_scalars);
+
+        auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
+        stresses_matrix = exper::mdspan<T, rnk4, layout>(stresses_starting_index, nx, ny, 2, 2);
+
+        flags_matrix = exper::mdspan<Flags, rnk3, layout>(flags_buffer.data(), nx, ny, q);
+
+        rhob_matrix = exper::submdspan(rhob_matrix_, exper::full_extent, exper::full_extent, 0);
+
+        initialize();
+    }
+
+    void swap() {
+        std::swap(f_matrix, f_matrix_2);
+    }
+
+    inline int oppositeIndex(int i) const {
+        return opposite[i];
+    }
+
+    void initialize() {
+        for (int x = 0; x < nx; ++x) {
+            for (int y = 0; y < ny; ++y) {
+                T rhob_val = 0.0;
+                T ux = 0.0;
+                T uy = 0.0;
+                rhob_matrix(x, y) = rhob_val;
+                velocity_matrix(x, y, 0) = ux;
+                velocity_matrix(x, y, 1) = uy;
+                for (int i = 0; i < 37; ++i) {
+                    T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
+                    T u_sq = 1.5 * (ux * ux + uy * uy);
+                    f_matrix(x, y, i) = w[i] * (rhob_val + 1.0) * (1 + cu + 0.5 * cu * cu - u_sq) - w[i];
+                    f_matrix_2(x, y, i) = f_matrix(x, y, i);
+                }
+            }
+        }
+    }
+};
+
 
 // Function to compute gradient of m2sgs
 void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
@@ -307,28 +413,28 @@ void computeStressTensor(const exper::mdspan<T, rnk3, layout>& velocity,
 }
 
 
-// Compute the moments of populations to populate density and velocity vectors in D2Q9lattice
-void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
-  assert(before_cs);
-  auto xs = std::views::iota(0, g.nx);
-  auto ys = std::views::iota(0, g.ny);
-  auto coords = std::views::cartesian_product(ys, xs);
+template <typename Lattice>
+void computeMoments(Lattice& g, bool even = true, bool before_cs = true) {
+    assert(before_cs);
+    auto xs = std::views::iota(0, g.nx);
+    auto ys = std::views::iota(0, g.ny);
+    auto coords = std::views::cartesian_product(ys, xs);
 
-  // Parallel loop to compute moments
-  std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, even](auto coord) {
-    auto [y, x] = coord;
-    T rhob = 0.0, ux = 0.0, uy = 0.0;
-    for (int i = 0; i < 9; ++i) {
-      int iPop = even ? i : g.opposite[i];
-      rhob += g.f_matrix(x, y, iPop);
-      ux += g.f_matrix(x, y, iPop) * g.cx[i];
-      uy += g.f_matrix(x, y, iPop) * g.cy[i];
-    }
-    g.rhob_matrix_(x, y, 0) = rhob;
-    T rho = rhob + 1.0;
-    g.velocity_matrix(x, y, 0) = ux / rho;
-    g.velocity_matrix(x, y, 1) = uy / rho;
-  });
+    // Parallel loop to compute moments
+    std::for_each(std::execution::par_unseq, coords.begin(), coords.end(), [&g, even](auto coord) {
+        auto [y, x] = coord;
+        T rhob = 0.0, ux = 0.0, uy = 0.0;
+        for (int i = 0; i < g.q; ++i) {
+            int iPop = even ? i : g.opposite[i];
+            rhob += g.f_matrix(x, y, iPop);
+            ux += g.f_matrix(x, y, iPop) * g.cx[i];
+            uy += g.f_matrix(x, y, iPop) * g.cy[i];
+        }
+        g.rhob_matrix_(x, y, 0) = rhob;
+        T rho = rhob + 1.0;
+        g.velocity_matrix(x, y, 0) = ux / rho;
+        g.velocity_matrix(x, y, 1) = uy / rho;
+    });
 }
 
 std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint length, unsigned int tesselation,
@@ -383,7 +489,8 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
     return points;
 }
 
-auto line_segments_flags_initialization(D2Q9lattice& g, const std::vector<std::array<T, 2>>& segments){
+template<typename Lattice>
+auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array<T, 2>>& segments){
     // indexes
     auto xs = std::views::iota(0, g.nx);
     auto ys = std::views::iota(0, g.ny);
@@ -447,7 +554,8 @@ auto line_segments_flags_initialization(D2Q9lattice& g, const std::vector<std::a
     });
 }
 
-auto cylinder_flags_initialization(D2Q9lattice& g){
+template<typename Lattice>
+auto cylinder_flags_initialization(Lattice& g){
   // indexes
   auto xs = std::views::iota(0, g.nx);
   auto ys = std::views::iota(0, g.ny);
@@ -575,7 +683,8 @@ static void complete_bgk_ma2_equilibria(
     eqPop[5] = t1 * (rho * k2y * k2x) - t1;
 }
 
-void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
+template <typename Lattice>
+void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
     // indexes
@@ -596,7 +705,7 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
     std::array<T, 9> feq{0};
     T rhob = 0.0, ux = 0.0, uy = 0.0;
     T uxx = 0.0, uxy = 0.0, uyy = 0.0;
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < g.q; ++i) {
       tmpf[i] = g.f_matrix(x, y, i);
 //      rhob += tmpf[i];
 //      ux += tmpf[i] * g.cx[i];
@@ -623,7 +732,7 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
 //        cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
 
     // Compute equilibrium distributions
-      for (int i = 0; i < 9; ++i) {
+      for (int i = 0; i < g.q; ++i) {
           auto& iopp = g.opposite[i];
           T cu = g.cx[i] * ux + g.cy[i] * uy;
           T u_sq = ux * ux + uy * uy;
@@ -631,10 +740,10 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
           T cu_cub = cu * cu_sq;
           T cu_four = cu_sq * cu_sq;
 
-          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
+//          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
 
 
-//      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 
           // Collide step
@@ -715,7 +824,7 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         g.velocity_matrix(x, y, 1) = uy;
 
         // Initialize equilibrium distribution functions
-        for (int i = 0; i < 9; ++i) {
+        for (int i = 0; i < g.q; ++i) {
             T cu = g.cx[i] * ux + g.cy[i] * uy;
             T u_sq = 1.5 * (ux * ux + uy * uy);
             g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq)-g.w[i];
@@ -738,8 +847,8 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
 
 
 
-template <typename T>
-void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) {
+template <typename T, typename Lattice>
+void initializeDoubleShearLayer(Lattice &g, T U0, T alpha=80, T delta=0.05) {
   int nx = g.nx;
   int ny = g.ny;
   T L = nx;
@@ -758,7 +867,7 @@ void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) 
       g.velocity_matrix(x, y, 1) = uy;
 
       // Initialize populations based on the equilibrium distribution
-      for (int i = 0; i < 9; ++i) {
+      for (int i = 0; i < g.q; ++i) {
         T cu = g.cx[i] * ux + g.cy[i] * uy;
         T u_sq = 1.5 * (ux * ux + uy * uy);
         g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1.0) * (1. + 3. * cu + 4.5 * cu * cu - u_sq)-g.w[i];
@@ -773,9 +882,9 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 800;
-  int ny = 200;
-  T llb = ny/11.;
+  int nx = 300;
+  int ny = 300;
+  T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
   auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
@@ -794,7 +903,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =100;
+  T Re =10000;
   T Ma = 0.125;
 
   // reference dimensions
@@ -814,11 +923,11 @@ int main() {
   printf("u_lb = %f\ntau = %f\n", ulb,tau);
 
 //  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-20));
+//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-20));
 
 
   // Initialize the D2Q9lattice with the double shear layer
-//  initializeDoubleShearLayer(*g, ulb);
+  initializeDoubleShearLayer(*g, ulb,(T)10000.,(T)0.1);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
