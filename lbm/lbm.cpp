@@ -131,8 +131,8 @@ struct D2Q9lattice {
   const std::array<int, 9> opposite = {0, 3, 4, 1, 2, 7, 8, 5, 6};
   // Precomputed indices for 90° rotations
   // index =                                      {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  const std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
-  const std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
+//  const std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
+//  const std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
   T cslb = 1. / sqrt(3.);
   T cslb2 = cslb * cslb;
   T invCslb = 1. / cslb;
@@ -537,6 +537,44 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
 });
 }
 
+static void complete_bgk_ma2_equilibria(
+        T rho,const T& ux, const T& uy, std::array<T, 9> &eqPop, D2Q9lattice &g)
+{
+    T t0 = (T)0.25 * g.w[0];
+    T t1 = g.w[6];
+    T t2 = (T)0.5 * g.w[1];
+
+    T ux2 = ux * ux;
+    T uy2 = uy * uy;
+
+    T Cx = (T)3 * ux2 - 2;
+    T Cy = 3 * uy2 - 2;
+    eqPop[0] = t0 * (rho * Cy * Cx) - g.w[0];
+
+    T k1x = (T)3 * (ux2 - ux) + (T)1;
+    T k2x = k1x + 6 * ux;
+    T k1y = (T)3 * (uy2 - uy) + (T)1;
+    T k2y = k1y + 6 * uy;
+//    palabos -> lbm mapping:
+//    2 -> 3
+//    4 -> 4
+//    6 -> 1
+//    8 -> 2
+//    1 -> 6
+//    5 -> 8
+//    3 -> 7
+//    7 -> 5
+    eqPop[3] = -t2 * (rho * Cy * k1x) - g.w[2];
+    eqPop[4] = -t2 * (rho * k1y * Cx) - g.w[2];
+    eqPop[1] = -t2 * (rho * Cy * k2x) - g.w[2];
+    eqPop[2] = -t2 * (rho * k2y * Cx) - g.w[2];
+
+    eqPop[6] = t1 * (rho * k2y * k1x) - t1;
+    eqPop[8] = t1 * (rho * k1y * k2x) - t1;
+    eqPop[7] = t1 * (rho * k1y * k1x) - t1;
+    eqPop[5] = t1 * (rho * k2y * k2x) - t1;
+}
+
 void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
   T omega = 1.0 / tau;
 
@@ -560,42 +598,54 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
     T uxx = 0.0, uxy = 0.0, uyy = 0.0;
     for (int i = 0; i < 9; ++i) {
       tmpf[i] = g.f_matrix(x, y, i);
-      rhob += tmpf[i];
-      ux += tmpf[i] * g.cx[i];
-      uy += tmpf[i] * g.cy[i];
+//      rhob += tmpf[i];
+//      ux += tmpf[i] * g.cx[i];
+//      uy += tmpf[i] * g.cy[i];
       uxx += tmpf[i] * g.cx[i]* g.cx[i];
       uyy += tmpf[i] * g.cy[i]* g.cy[i];
       uxy += tmpf[i] * g.cx[i]* g.cy[i];
     }
 
     // Compute macroscopic density and velocities
+    rhob = g.rhob_matrix(x,y);
     T rho = rhob +1.0;
-    ux /= rho;
-    uy /= rho;
+//    ux /= rho;
+//    uy /= rho;
+    uxx += g.stresses_matrix(x,y,0,0);
+    uxy += g.stresses_matrix(x,y,0,1);
+    uyy += g.stresses_matrix(x,y,1,1);
     uxx /= rho;
     uxy /= rho;
     uyy /= rho;
-//    ux = g.velocity_matrix(x,y,0);
-//    uy = g.velocity_matrix(x,y,1);
-//    rhob = g.rhob_matrix(x,y);
-
-    // Compute equilibrium distributions
-    for (int i = 0; i < 9; ++i) {
-        auto& iopp = g.opposite[i];
-      T cu = g.cx[i] * ux + g.cy[i] * uy;
-      T u_sq = ux * ux + uy * uy;
-      T cu_sq = cu * cu;
+    ux = g.velocity_matrix(x,y,0);
+    uy = g.velocity_matrix(x,y,1);
 //        u_sq = uxx + uyy;
 //        cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
-      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
-      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
-      tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
-      T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
-      int x_stream = x + g.cx[i];
-      int y_stream = y + g.cy[i];
-      // Variables to handle periodic boundary conditions
-      int x_stream_periodic = (x_stream + g.nx) % g.nx;
-      int y_stream_periodic = (y_stream + g.ny) % g.ny;
+
+    // Compute equilibrium distributions
+      for (int i = 0; i < 9; ++i) {
+          auto& iopp = g.opposite[i];
+          T cu = g.cx[i] * ux + g.cy[i] * uy;
+          T u_sq = ux * ux + uy * uy;
+          T cu_sq = cu * cu;
+          T cu_cub = cu * cu_sq;
+          T cu_four = cu_sq * cu_sq;
+
+          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
+
+
+//      feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+//      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
+
+          // Collide step
+          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+//          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
+
+          // Streaming with consideration for periodic boundaries
+          int x_stream = x + g.cx[i];
+          int y_stream = y + g.cy[i];
+          int x_stream_periodic = (x_stream + g.nx) % g.nx;
+          int y_stream_periodic = (y_stream + g.ny) % g.ny;
 
 //      auto a = g.hwbb;
       // Handle periodic and bounce-back boundary conditions
@@ -744,7 +794,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =50;
+  T Re =100;
   T Ma = 0.125;
 
   // reference dimensions
@@ -755,8 +805,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = Tlb*10.;
-  int outputIter =num_steps / 5;
+  int num_steps = /*100;*/Tlb*10.;
+  int outputIter = num_steps / 5;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
