@@ -868,10 +868,10 @@ void initializeDoubleShearLayer(Lattice &g, T U0, T alpha=80, T delta=0.05) {
 
       // Initialize populations based on the equilibrium distribution
       for (int i = 0; i < g.q; ++i) {
-        T cu = g.cx[i] * ux + g.cy[i] * uy;
-        T u_sq = 1.5 * (ux * ux + uy * uy);
-        g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1.0) * (1. + 3. * cu + 4.5 * cu * cu - u_sq)-g.w[i];
-        g.f_matrix_2(x, y, i) = g.f_matrix(x, y, i); // Initialize f_2 the same way as f
+          T cu = g.cx[i] * ux + g.cy[i] * uy;
+          T u_sq =  (ux * ux + uy * uy);
+          g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu * cu - 0.5*g.invCslb2 *u_sq)-g.w[i];
+          g.f_matrix_2(x, y, i) = g.f_matrix(x, y, i); // Initially set f_2 equal to f
       }
     }
   }
@@ -887,7 +887,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
