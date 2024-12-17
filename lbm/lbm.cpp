@@ -24,63 +24,96 @@ using rnk2 = exper::dextents<int, 2>;
 using rnk3 = exper::dextents<int, 3>;
 using rnk4 = exper::dextents<int, 4>;
 
+#include <variant>
+#include <iostream>
+
+template<typename T, typename LayoutPolicy>
+using MdspanVariant = std::variant<
+exper::mdspan<T, rnk2, LayoutPolicy>,
+exper::mdspan<T, rnk3, LayoutPolicy>,
+exper::mdspan<T, rnk4, LayoutPolicy>
+>;
 
 template<typename T, typename LayoutPolicy>
 void writeVTK2D(
-    const std::string &filename,
-    tl::cartesian_product_view<std::ranges::iota_view<int, int>, std::ranges::iota_view<int, int>>grid,
-    std::vector<std::pair<std::string, exper::mdspan<T, rnk3, LayoutPolicy>>> fields,
-    int NX, int NY
+        const std::string &filename,
+        tl::cartesian_product_view<std::ranges::iota_view<int, int>, std::ranges::iota_view<int, int>> grid,
+        std::vector<std::pair<std::string, MdspanVariant<T, LayoutPolicy>>> fields,
+        int NX, int NY
 ) {
-  std::ofstream out(filename); // Open the file
+    std::ofstream out(filename); // Open the file
 
-  if (!out.is_open()) {
-    throw std::ios_base::failure("Failed to open file");
-  }
-
-  int N = NX * NY;
-
-  out << "# vtk DataFile Version 3.0\n";
-  out << "2D Test file\n";
-  out << "ASCII\n";
-  out << "DATASET STRUCTURED_GRID\n";
-  out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n'; // Z dimension is 1 for 2D data
-  out << "POINTS " << N << " double\n";
-
-  // Writing the grid coordinates using cartesian product
-  for (const auto& [iy, ix] : grid) {
-    out << ix << " " << iy << " " << 0 << '\n';
-  }
-
-  // Writing field data
-  out << "POINT_DATA " << N << '\n';
-
-  for (const auto& [field_name, field_data] : fields) {
-    int num_components = field_data.extent(2);
-
-    if (num_components <= 1) {
-      out << "SCALARS " << field_name << " double\n";
-//      std::cout << "writing... SCALARS " << field_name << " double" << "; num_components = " << num_components << std::endl;
-      out << "LOOKUP_TABLE default\n";
-    } else if (num_components < 4){
-      out << "VECTORS " << field_name << " double\n";
-//      std::cout << "writing... VECTORS " << field_name << " double" << "; num_components = " << num_components << std::endl;
-    }else {
-      out << "TENSORS " << field_name << " double\n";
-//      std::cout << "writing... TENSORS " << field_name << " double" << "; num_components = " << num_components << std::endl;
+    if (!out.is_open()) {
+        throw std::ios_base::failure("Failed to open file");
     }
 
+    int N = NX * NY;
+
+    out << "# vtk DataFile Version 3.0\n";
+    out << "2D Test file\n";
+    out << "ASCII\n";
+    out << "DATASET STRUCTURED_GRID\n";
+    out << "DIMENSIONS " << NX << ' ' << NY << ' ' << 1 << '\n'; // Z dimension is 1 for 2D data
+    out << "POINTS " << N << " double\n";
+
+    // Writing the grid coordinates using cartesian product
     for (const auto& [iy, ix] : grid) {
-        out << std::scientific << field_data(ix, iy, 0) << ' ';
-      for (int ic = 1; ic < num_components; ++ic) {
-        out << std::scientific << field_data(ix, iy, ic) << ' ';
-      }
-      if (num_components < 3 and num_components not_eq 0) out << 0 << ' ';
-      out << '\n';
+        out << ix << " " << iy << " " << 0 << '\n';
     }
-  }
-  out.close(); // Close the file
+
+    // Writing field data
+    out << "POINT_DATA " << N << '\n';
+
+    for (const auto& [field_name, field_data_variant] : fields) {
+        std::visit([&](auto&& field_data) {
+            using MDSpanType = std::decay_t<decltype(field_data)>;
+            constexpr int Rank = MDSpanType::rank_dynamic(); // Determine the rank of the mdspan
+
+            int num_components = 1;
+            int num_components2 = 1;
+            if constexpr (Rank == 3) {
+            num_components = field_data.extent(Rank - 1);
+            }
+            else if constexpr (Rank == 4) {
+            num_components = field_data.extent(Rank - 2);
+            num_components2 = field_data.extent(Rank - 1);
+            }
+
+            if (Rank == 2 or num_components == 1) {
+                out << "SCALARS " << field_name << " double\n";
+                out << "LOOKUP_TABLE default\n";
+            } else if (Rank == 3 and num_components <= 3) {
+                out << "VECTORS " << field_name << " double\n";
+            } else {
+                out << "TENSORS6 " << field_name << " double\n";
+            }
+
+            for (const auto& [iy, ix] : grid) {
+//                if constexpr(Rank == 2) out << std::scientific << field_data(ix, iy) << ' ';
+//                else if constexpr(Rank == 3) out << std::scientific << field_data(ix, iy, 0) << ' ';
+//                else if constexpr(Rank == 4) out << std::scientific << field_data(ix, iy, 0,0) << ' ';
+                for (int ic = 0; ic < num_components; ++ic) {
+                    if constexpr(Rank == 2) out << std::scientific << field_data(ix, iy) << ' ';
+                    else if constexpr(Rank == 3) out << std::scientific << field_data(ix, iy, ic) << ' ';
+                    else if constexpr(Rank == 4)
+                    {
+                        for (int ic2 = 0; ic2 < num_components2; ++ic2)
+                            out << std::scientific << field_data(ix, iy, ic, ic2) << ' ';
+                    };
+                }
+                if (Rank == 3 and num_components == 2) {
+                    out << 0 << ' ';
+                }
+                else if (Rank == 4 and num_components == 2) {
+                    out << 0 << ' ' << 0 << ' ';
+                }
+                out << '\n';
+            }
+        }, field_data_variant);
+    }
+    out.close(); // Close the file
 }
+
 
 
 // Data structure for the D2Q9lattice
@@ -107,52 +140,39 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-  exper::mdspan<T, rnk3,layout> f_data, f_data_2, dynamic_data,velocity_data,rhob_data_;
+    exper::mdspan<T, rnk2, layout> rhob_matrix;
+  exper::mdspan<T, rnk3,layout> f_matrix, f_matrix_2, dynamic_matrix,velocity_matrix,rhob_matrix_;
+  exper::mdspan<T, rnk4,layout> stresses_matrix;
 
     // Take a subspan that only considers the first two indices
 // Define the full type for the submdspan
-  exper::mdspan<T, rnk2, layout> rhob_data;
-  exper::mdspan<Flags, rnk3,layout> flags_data;
-
-
-
-    // Storage for filtered fields
-    std::vector<T> vel_filtered_data;
-    std::vector<T> tensor_filtered_data;
-    std::vector<T> m2sgs_data;
-    std::vector<T> dm2sgs_data;
-    exper::mdspan<T, rnk4,layout> m2sgs;
-    exper::mdspan<T, rnk3,layout> dm2sgs;
-    exper::mdspan<T, rnk3, layout> vel_filtered;
-    exper::mdspan<T, rnk4, layout> tensor_filtered;
+  exper::mdspan<Flags, rnk3,layout> flags_matrix;
 
   D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
-                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars, 1.0),
-                                                                       flags_buffer(nx * ny * q,bulk),
-                                       vel_filtered_data(nx * ny * 2, 0),tensor_filtered_data(nx * ny * 2 * 2, 0),
-                                       dm2sgs_data(nx * ny * 2, 0),m2sgs_data(nx * ny * 2 * 2, 0)
+                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars+ nx * ny * 4, 1.0),
+                                                                       flags_buffer(nx * ny * q,bulk)
 
   {
-      vel_filtered = exper::mdspan<T, rnk3, layout>(vel_filtered_data.data(), nx, ny, 2);
-      tensor_filtered = exper::mdspan<T, rnk4, layout>(tensor_filtered_data.data(), nx, ny, 2, 2);
-      m2sgs = exper::mdspan<T, rnk4, layout>(m2sgs_data.data(), nx, ny, 2, 2);
-      dm2sgs = exper::mdspan<T, rnk3, layout>(dm2sgs_data.data(), nx, ny, 2);
+    f_matrix = exper::mdspan<T, rnk3,layout>(buffer.data(), nx, ny, q);
+    f_matrix_2 = exper::mdspan<T, rnk3,layout>(buffer.data() + f_matrix.size(), nx, ny, q);
+    auto velocity_matrix_starting_index = buffer.data() + f_matrix.size()+ f_matrix_2.size();
+    velocity_matrix = exper::mdspan<T, rnk3,layout>(velocity_matrix_starting_index, nx, ny, d);
+    auto rhob_matrix_starting_index = velocity_matrix_starting_index + velocity_matrix.size();
+    rhob_matrix_ = exper::mdspan<T, rnk3,layout>(rhob_matrix_starting_index, nx, ny,0);
+    auto dynamic_matrix_starting_index = rhob_matrix_starting_index + rhob_matrix_.size();
+    dynamic_matrix = exper::mdspan<T, rnk3,layout>(dynamic_matrix_starting_index, nx, ny,number_dynamic_scalars);
+    auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
+    stresses_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
 
-    f_data = exper::mdspan<T, rnk3,layout>(buffer.data(), nx, ny, q);
-    f_data_2 = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size(), nx, ny, q);
-    velocity_data = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size(), nx, ny, d);
-    rhob_data_ = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size(), nx, ny,0);
-    dynamic_data = exper::mdspan<T, rnk3,layout>(buffer.data() + f_data.size()+ f_data_2.size() + velocity_data.size() + rhob_data_.size(), nx, ny,number_dynamic_scalars);
-
-    flags_data = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
+    flags_matrix = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
 
       // Take the subspan that only considers the first two indexes
-    rhob_data = exper::submdspan(rhob_data_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
+    rhob_matrix = exper::submdspan(rhob_matrix_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
     initialize();
   }
 
   void swap() {
-    std::swap(f_data, f_data_2);
+    std::swap(f_matrix, f_matrix_2);
   }
 
   inline int oppositeIndex(int i) const {
@@ -165,159 +185,19 @@ struct D2Q9lattice {
         T rhob_val = 0.0;
         T ux = 0.0;
         T uy = 0.0;
-        rhob_data(x, y) = rhob_val;
-        velocity_data(x, y, 0) = ux;
-        velocity_data(x, y, 1) = uy;
+        rhob_matrix(x, y) = rhob_val;
+        velocity_matrix(x, y, 0) = ux;
+        velocity_matrix(x, y, 1) = uy;
         for (int i = 0; i < 9; ++i) {
           T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
           T u_sq = 1.5 * (ux * ux + uy * uy);
-          f_data(x, y, i) = w[i] * (rhob_val+1.0) * (1 + cu + 0.5 * cu * cu - u_sq)-w[i];
-          f_data_2(x, y, i) = f_data(x, y, i); // Initialize f_2 the same way as f
+          f_matrix(x, y, i) = w[i] * (rhob_val+1.0) * (1 + cu + 0.5 * cu * cu - u_sq)-w[i];
+          f_matrix_2(x, y, i) = f_matrix(x, y, i); // Initialize f_2 the same way as f
         }
       }
     }
   }
 };
-
-// Function to apply box filter to the vector field (velocity_data)
-void boxFilterVectorField(const exper::mdspan<T, rnk3, layout>& input,
-                          exper::mdspan<T, rnk3, layout>& output) {
-
-    int NX = input.extent(0);
-    int NY = input.extent(1);
-    int d = input.extent(2);
-    auto xs = std::views::iota(0, NX);
-    auto ys = std::views::iota(0, NY);
-    auto xys = std::views::cartesian_product(ys, xs);
-
-
-    // Compute the box filter in parallel
-    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(),
-                  [&input, &output, d, NX, NY](auto coord) {
-                      auto [y, x] = coord;
-
-                      auto filterSize = 21;
-                      auto halfFilterSize = filterSize / 2;
-                      for (int i = 0; i < d; ++i) {
-                          T sum = 0.0;
-                          int count = 0;
-                          for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
-                              for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
-                                  int nx = x + fx;
-                                  int ny = y + fy;
-
-                                  // Ensure nx and ny are within bounds
-                                  if (nx < 0) nx = 0;
-                                  if (ny < 0) ny = 0;
-                                  if (nx >= NX) nx = NX - 1;
-                                  if (ny >= NY) ny = NY - 1;
-
-                                  sum += input(nx, ny, i);
-                                  ++count;
-                              }
-                          }
-                          output(x, y, i) = sum / static_cast<T>(count);
-                      }
-                  });
-}
-
-// Function to apply box filter to the tensor field
-void boxFilterTensorField(const exper::mdspan<T, rnk4, layout>& input,
-                          exper::mdspan<T, rnk4, layout>& output) {
-
-    auto nx = input.extent(0);
-    auto ny = input.extent(1);
-    auto d1 = input.extent(2);
-    auto d2 = input.extent(3);
-    auto xs = std::views::iota(0, static_cast<int>(nx));
-    auto ys = std::views::iota(0, static_cast<int>(ny));
-    auto xys = std::views::cartesian_product(xs, ys);
-
-    // Compute the box filter in parallel
-    std::for_each(std::execution::par, xys.begin(), xys.end(),
-                  [&input, &output, d1, d2](auto coord) {
-                      auto [x, y] = coord;  // Note: Changed the order here to (x, y)
-                      auto filterSize = 21;
-                      auto halfFilterSize = filterSize / 2;
-                      int max_x = static_cast<int>(input.extent(0)) - 1;
-                      int max_y = static_cast<int>(input.extent(1)) - 1;
-
-                      for (int i = 0; i < d1; ++i) {
-                          for (int j = 0; j < d2; ++j) {
-                              T sum = 0.0;
-                              int count = 0;
-                              for (int fy = -halfFilterSize; fy <= halfFilterSize; ++fy) {
-                                  for (int fx = -halfFilterSize; fx <= halfFilterSize; ++fx) {
-                                      int nx = x + fx;
-                                      int ny = y + fy;
-
-                                      // Manually clamp to the valid range
-                                      if (nx < 0) nx = 0;
-                                      else if (nx > max_x) nx = max_x;
-
-                                      if (ny < 0) ny = 0;
-                                      else if (ny > max_y) ny = max_y;
-
-                                      sum += input(nx, ny, i, j);
-                                      ++count;
-                                  }
-                              }
-                              output(x, y, i, j) = sum / static_cast<T>(count);
-                          }
-                      }
-                  });
-}
-
-// New computeM2sgs function
-auto columnXrow(const exper::mdspan<T, rnk3, layout>& vel1,const exper::mdspan<T, rnk3, layout>& vel2, exper::mdspan<T, rnk4, layout>& m2sgs)->void {
-    auto nx = vel1.extent(0);
-    auto ny = vel1.extent(1);
-    auto d = vel1.extent(2);
-    auto xs = std::views::iota(0, nx);
-    auto ys = std::views::iota(0, ny);
-    auto xys = std::views::cartesian_product(ys, xs);
-
-    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&vel1,&vel2, &m2sgs, d](auto coord) {
-        auto [y, x] = coord;
-        for (int i = 0; i < d; ++i) {
-            for (int j = 0; j < d; ++j) {
-                auto vel_vec_i = vel1(x, y, i);
-                auto vel_vec_j = vel2(x, y, j);
-//                auto filtered_vec_i = vel_filtered(x, y, i);
-//                auto filtered_vec_j = vel_filtered(x, y, j);
-
-                // Using NVidia's std::experimental::linalg to compute matrix operations:
-                m2sgs(x, y, i, j) = vel_vec_i * vel_vec_j;
-            }
-        }
-//        linalg::matrix_product( std::execution::par, exper::submdspan(vel,x,y,expr::full_extent), exper::submdspan(vel,x,y,expr::full_extent), C );
-    });
-}
-
-// New computeM2sgs function
-auto computeM2sgs(const exper::mdspan<T, rnk4, layout>& fuu, const exper::mdspan<T, rnk3, layout>& vel_filtered,
-                  exper::mdspan<T, rnk4, layout>& m2sgs)->void {
-    auto nx = vel_filtered.extent(0);
-    auto ny = vel_filtered.extent(1);
-    auto d  = vel_filtered.extent(2);
-    auto xs = std::views::iota(0, nx);
-    auto ys = std::views::iota(0, ny);
-    auto xys = std::views::cartesian_product(ys, xs);
-
-    std::for_each(std::execution::par_unseq, xys.begin(), xys.end(), [&fuu, &vel_filtered, &m2sgs, d](auto coord) {
-        auto [y, x] = coord;
-        for (int i = 0; i < d; ++i) {
-            for (int j = 0; j < d; ++j) {
-                auto filtered_vec_i = vel_filtered(x, y, i);
-                auto filtered_vec_j = vel_filtered(x, y, j);
-
-                // Using NVidia's std::experimental::linalg to compute matrix operations:
-                m2sgs(x, y, i, j) = fuu(x,y,i,j) - filtered_vec_i * filtered_vec_j;
-            }
-        }
-//        linalg::matrix_product( std::execution::par, exper::submdspan(vel,x,y,expr::full_extent), exper::submdspan(vel,x,y,expr::full_extent), C );
-    });
-}
 
 // Function to compute gradient of m2sgs
 void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
@@ -368,6 +248,65 @@ void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
                   });
 }
 
+// Function to compute stress tensor components given the velocity field
+void computeStressTensor(const exper::mdspan<T, rnk3, layout>& velocity,
+                         exper::mdspan<T, rnk4, layout>& stress_tensor,
+                         T viscosity) {
+
+    auto nx = velocity.extent(0);
+    auto ny = velocity.extent(1);
+
+    // Check extents matching
+    assert(nx == stress_tensor.extent(0) && ny == stress_tensor.extent(1));
+
+    // Cartesian product of indexes
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(xs, ys);
+
+    // Compute the stress tensor in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&stress_tensor, &velocity, nx, ny, viscosity](auto coord) {
+                      auto [x, y] = coord;
+                      T du_dx = 0.0;
+                      T du_dy = 0.0;
+                      T dv_dx = 0.0;
+                      T dv_dy = 0.0;
+
+                      // 6th order finite differences coefficients
+                      constexpr T coeff[4] = {1.0 / 60.0, -3.0 / 20.0, 3.0 / 4.0, 0.0};
+
+                      // Calculate gradient in the x direction for u and v components
+                      for (int k = 1; k <= 3; ++k) {
+                          int xp_k = (x + k + nx) % nx;
+                          int xm_k = (x - k + nx) % nx;
+
+                          du_dx += coeff[k - 1] * (velocity(xp_k, y, 0) - velocity(xm_k, y, 0));
+                          dv_dx += coeff[k - 1] * (velocity(xp_k, y, 1) - velocity(xm_k, y, 1));
+                      }
+                      du_dx /= 2; // Because we consider central difference
+                      dv_dx /= 2; // Because we consider central difference
+
+                      // Calculate gradient in the y direction for u and v components
+                      for (int k = 1; k <= 3; ++k) {
+                          int yp_k = (y + k + ny) % ny;
+                          int ym_k = (y - k + ny) % ny;
+
+                          du_dy += coeff[k - 1] * (velocity(x, yp_k, 0) - velocity(x, ym_k, 0));
+                          dv_dy += coeff[k - 1] * (velocity(x, yp_k, 1) - velocity(x, ym_k, 1));
+                      }
+                      du_dy /= 2; // Because we consider central difference
+                      dv_dy /= 2; // Because we consider central difference
+
+                      // Compute the components of the stress tensor
+                      stress_tensor(x, y, 0, 0) = viscosity * 2 * du_dx;      // Tau_xx
+                      stress_tensor(x, y, 1, 1) = viscosity * 2 * dv_dy;      // Tau_yy
+                      stress_tensor(x, y, 0, 1) = viscosity * (du_dy + dv_dx); // Tau_xy
+                      stress_tensor(x, y, 1, 0) = stress_tensor(x, y, 0, 1);  // Tau_yx = Tau_xy
+                  });
+}
+
+
 // Compute the moments of populations to populate density and velocity vectors in D2Q9lattice
 void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
   assert(before_cs);
@@ -381,14 +320,14 @@ void computeMoments(D2Q9lattice &g, bool even = true, bool before_cs = true) {
     T rhob = 0.0, ux = 0.0, uy = 0.0;
     for (int i = 0; i < 9; ++i) {
       int iPop = even ? i : g.opposite[i];
-      rhob += g.f_data(x, y, iPop);
-      ux += g.f_data(x, y, iPop) * g.cx[i];
-      uy += g.f_data(x, y, iPop) * g.cy[i];
+      rhob += g.f_matrix(x, y, iPop);
+      ux += g.f_matrix(x, y, iPop) * g.cx[i];
+      uy += g.f_matrix(x, y, iPop) * g.cy[i];
     }
-    g.rhob_data_(x, y, 0) = rhob;
+    g.rhob_matrix_(x, y, 0) = rhob;
     T rho = rhob + 1.0;
-    g.velocity_data(x, y, 0) = ux / rho;
-    g.velocity_data(x, y, 1) = uy / rho;
+    g.velocity_matrix(x, y, 0) = ux / rho;
+    g.velocity_matrix(x, y, 1) = uy / rho;
   });
 }
 
@@ -488,21 +427,21 @@ auto line_segments_flags_initialization(D2Q9lattice& g, const std::vector<std::a
         auto [x,y,i] = xyi;
 
         if (x == 0 and g.cx[i] == -1)
-            g.flags_data(x, y, i) = g.inlet;
+            g.flags_matrix(x, y, i) = g.inlet;
         else if (x == (g.nx - 1) and g.cx[i] > 0)
-            g.flags_data(x, y, i) = g.outlet;
+            g.flags_matrix(x, y, i) = g.outlet;
         else if (y == 0 and g.cy[i] < 0)
-            g.flags_data(x, y, i) = g.outlet;
+            g.flags_matrix(x, y, i) = g.outlet;
         else if (y == g.ny-1 and g.cy[i] > 0)
-            g.flags_data(x, y, i) = g.outlet;
+            g.flags_matrix(x, y, i) = g.outlet;
         else {
             auto intersection =
                     segment_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]);
             if (intersection.has_value() and intersection.value() < g.cnorm[i]) {
-                g.flags_data(x, y, i) = g.hwbb;
-                g.dynamic_data(x, y, i) = intersection.value();
+                g.flags_matrix(x, y, i) = g.hwbb;
+                g.dynamic_matrix(x, y, i) = intersection.value();
             } else {
-                g.flags_data(x, y, i) = g.bulk;
+                g.flags_matrix(x, y, i) = g.bulk;
             }
         }
     });
@@ -580,21 +519,21 @@ auto cylinder_flags_initialization(D2Q9lattice& g){
     auto [i,y,x] = iyx;
 
     if (x == 0 and g.cx[i] == -1)
-      g.flags_data(x, y, i) = g.inlet;
+      g.flags_matrix(x, y, i) = g.inlet;
     else if (x == (g.nx - 1) and g.cx[i] > 0)
-      g.flags_data(x, y, i) = g.outlet;
+      g.flags_matrix(x, y, i) = g.outlet;
     else if (/*x > 0 and */y == 0 and g.cy[i] < 0)
-      g.flags_data(x, y, i) = g.outlet;
+      g.flags_matrix(x, y, i) = g.outlet;
     else if (/*x > 0 and */y == g.ny-1 and g.cy[i] > 0)
-      g.flags_data(x, y, i) = g.outlet;
+      g.flags_matrix(x, y, i) = g.outlet;
     else if (is_near(x, y)) {
       auto intersection =
           getMinimumPositive(circle_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]));
       if (intersection.has_value() and intersection.value() < g.cnorm[i]) {
-        g.flags_data(x, y, i) = g.hwbb;
-        g.dynamic_data(x, y, i) = intersection.value();
+        g.flags_matrix(x, y, i) = g.hwbb;
+        g.dynamic_matrix(x, y, i) = intersection.value();
       }
-    } else /*if (not is_near(x,y))*/ g.flags_data(x, y, i) = g.bulk;
+    } else /*if (not is_near(x,y))*/ g.flags_matrix(x, y, i) = g.bulk;
 });
 }
 
@@ -618,17 +557,27 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
     T rhob = 0.0, ux = 0.0, uy = 0.0;
+    T uxx = 0.0, uxy = 0.0, uyy = 0.0;
     for (int i = 0; i < 9; ++i) {
-      tmpf[i] = g.f_data(x, y, i);
+      tmpf[i] = g.f_matrix(x, y, i);
       rhob += tmpf[i];
       ux += tmpf[i] * g.cx[i];
       uy += tmpf[i] * g.cy[i];
+      uxx += tmpf[i] * g.cx[i]* g.cx[i];
+      uyy += tmpf[i] * g.cy[i]* g.cy[i];
+      uxy += tmpf[i] * g.cx[i]* g.cy[i];
     }
 
     // Compute macroscopic density and velocities
     T rho = rhob +1.0;
     ux /= rho;
     uy /= rho;
+    uxx /= rho;
+    uxy /= rho;
+    uyy /= rho;
+//    ux = g.velocity_matrix(x,y,0);
+//    uy = g.velocity_matrix(x,y,1);
+//    rhob = g.rhob_matrix(x,y);
 
     // Compute equilibrium distributions
     for (int i = 0; i < 9; ++i) {
@@ -636,6 +585,8 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
       T cu = g.cx[i] * ux + g.cy[i] * uy;
       T u_sq = ux * ux + uy * uy;
       T cu_sq = cu * cu;
+//        u_sq = uxx + uyy;
+//        cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
       feq[i] = g.w[i] * (rhob+(T)1.0) * (1.0 + 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
       T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
       tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
@@ -648,16 +599,16 @@ void collide_stream_two_populations(D2Q9lattice &g, T ulb, T tau) {
 
 //      auto a = g.hwbb;
       // Handle periodic and bounce-back boundary conditions
-      if (g.flags_data(x,y,i) == g.hwbb) {
-          T q = g.dynamic_data(x,y,i)/g.cnorm[i];
-//        g.f_data_2(x, y, iopp) = tmpf[i];
-          g.f_data_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_data(x, y, i)+g.f_data(x, y, iopp));
-      } else if (g.flags_data(x,y,i) == g.inlet) {
-        g.f_data_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
-      } else if (g.flags_data(x,y,i) == g.outlet) {
+      if (g.flags_matrix(x,y,i) == g.hwbb) {
+          T q = g.dynamic_matrix(x,y,i)/g.cnorm[i];
+        g.f_matrix_2(x, y, iopp) = tmpf[i];
+//          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
+      } else if (g.flags_matrix(x,y,i) == g.inlet) {
+        g.f_matrix_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
+      } else if (g.flags_matrix(x,y,i) == g.outlet) {
         //do nothing
       }  else { // periodic
-        g.f_data_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
+        g.f_matrix_2(x_stream_periodic, y_stream_periodic, i) = tmpf[i];
       }
     }
   });
@@ -709,28 +660,28 @@ void initializeDipoleWallCollision(D2Q9lattice &g, T Re, T nu, T r0, T x1, T y1,
         }
 
         // Set lattice node values
-        g.rhob_data_(x, y, 0) = rhob_val;
-        g.velocity_data(x, y, 0) = ux;
-        g.velocity_data(x, y, 1) = uy;
+        g.rhob_matrix_(x, y, 0) = rhob_val;
+        g.velocity_matrix(x, y, 0) = ux;
+        g.velocity_matrix(x, y, 1) = uy;
 
         // Initialize equilibrium distribution functions
         for (int i = 0; i < 9; ++i) {
             T cu = g.cx[i] * ux + g.cy[i] * uy;
             T u_sq = 1.5 * (ux * ux + uy * uy);
-            g.f_data(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq)-g.w[i];
-            g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initially set f_2 equal to f
+            g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1) * (1.0 + 3.0 * cu + 4.5 * cu * cu - u_sq)-g.w[i];
+            g.f_matrix_2(x, y, i) = g.f_matrix(x, y, i); // Initially set f_2 equal to f
 
             // Handle boundary conditions
             if (x == 0 && g.cx[i] == -1)
-                g.flags_data(x, y, i) = g.hwbb;
+                g.flags_matrix(x, y, i) = g.hwbb;
             else if (x == (nx - 1) && g.cx[i] == 1)
-                g.flags_data(x, y, i) = g.hwbb;
+                g.flags_matrix(x, y, i) = g.hwbb;
             else if (y == 0 && g.cy[i] == -1)
-                g.flags_data(x, y, i) = g.hwbb;
+                g.flags_matrix(x, y, i) = g.hwbb;
             else if (y == (ny - 1) && g.cy[i] == 1)
-                g.flags_data(x, y, i) = g.hwbb;
+                g.flags_matrix(x, y, i) = g.hwbb;
             else
-                g.flags_data(x, y, i) = g.bulk;
+                g.flags_matrix(x, y, i) = g.bulk;
         }
     });
 }
@@ -752,16 +703,16 @@ void initializeDoubleShearLayer(D2Q9lattice &g, T U0, T alpha=80, T delta=0.05) 
       T ux = U0 * std::tanh(alpha * (0.25 - std::abs((static_cast<T>(y) / static_cast<T>(ny)) - 0.5)));
       T uy = U0 * delta * std::sin(2.0 * M_PI * (static_cast<T>(x) / static_cast<T>(nx) + 0.25));
 
-      g.rhob_data_(x, y, 0) = rhob_val;
-      g.velocity_data(x, y, 0) = ux;
-      g.velocity_data(x, y, 1) = uy;
+      g.rhob_matrix_(x, y, 0) = rhob_val;
+      g.velocity_matrix(x, y, 0) = ux;
+      g.velocity_matrix(x, y, 1) = uy;
 
       // Initialize populations based on the equilibrium distribution
       for (int i = 0; i < 9; ++i) {
         T cu = g.cx[i] * ux + g.cy[i] * uy;
         T u_sq = 1.5 * (ux * ux + uy * uy);
-        g.f_data(x, y, i) = g.w[i] * (rhob_val+(T)1.0) * (1. + 3. * cu + 4.5 * cu * cu - u_sq)-g.w[i];
-        g.f_data_2(x, y, i) = g.f_data(x, y, i); // Initialize f_2 the same way as f
+        g.f_matrix(x, y, i) = g.w[i] * (rhob_val+(T)1.0) * (1. + 3. * cu + 4.5 * cu * cu - u_sq)-g.w[i];
+        g.f_matrix_2(x, y, i) = g.f_matrix(x, y, i); // Initialize f_2 the same way as f
       }
     }
   }
@@ -772,8 +723,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 1800;
-  int ny = 800;
+  int nx = 800;
+  int ny = 200;
   T llb = ny/11.;
 
   // Setup D2Q9lattice and initial conditions
@@ -793,7 +744,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1500;
+  T Re =50;
   T Ma = 0.125;
 
   // reference dimensions
@@ -836,57 +787,35 @@ int main() {
     //    bool even = (t % 2 == 0);
 
     // Output results every outputIter iterations
-    if (t % outputIter == 0) {
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
+      computeStressTensor(g->velocity_matrix,g->stresses_matrix,nu);
+    if (t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
-//      D2Q9lattice::Flags* flags_data = g->flags_data.data_handle();
-//      auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_data,g->flags_buffer.size());
+//      D2Q9lattice::Flags* flags_matrix = g->flags_matrix.data_handle();
+//      auto flags_iterable = std::span<D2Q9lattice::Flags>(flags_matrix,g->flags_buffer.size());
 //      // Cast to `float*`
 //      std::vector<T> float_data;
 //      std::transform(flags_iterable.begin(),flags_iterable.end(),std::back_inserter(float_data),[](auto&& flag){return static_cast<T>(flag);});
 //      // Create the new `mdspan` with `float` type
 //      exper::mdspan<T, rnk3, layout> float_mdspan(float_data.data(),g->nx,g->ny,g->q);
 
-        // Compute gradient
-        // Apply box filters
-        boxFilterVectorField(g->velocity_data, g->vel_filtered);
-        columnXrow(g->velocity_data,g->velocity_data,g->m2sgs);
-        boxFilterTensorField(g->m2sgs,g->tensor_filtered);
-        computeM2sgs(g->tensor_filtered, g->vel_filtered,g->m2sgs);
-        computeGradient(g->m2sgs, g->dm2sgs);
 
         // Prepare fields for VTK output
-        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> fields = {
-                {"velocity", g->velocity_data},
-//                {"dm2sgs", g->dm2sgs},
-                {"rhob", g->rhob_data_},
-                {"filtered_velocity", g->vel_filtered},
-                {"dm2sgs", g->dm2sgs}
+        std::vector<std::pair<std::string, MdspanVariant<T, layout>>> fields = {
+                {"velocity", g->velocity_matrix},
+                {"rhob", g->rhob_matrix},
+                {"stresses", g->stresses_matrix}
         };
+//        fields.push_back(std::make_pair("velocity", g->velocity_matrix));
 
 
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
       writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
-//        auto transposed = linalg::transposed(g->dm2sgs);
-        columnXrow(g->vel_filtered, g->dm2sgs,g->m2sgs);
-        std::for_each(std::execution::par_unseq, a1a2yxs.begin(), a1a2yxs.end(),
-                      [&gg, nx, ny](auto c) {
-                          auto [a1,a2,y,x] = c;
-//                          exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent) =
-//                                  exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent)
-//                                  +linalg::transposed(exper::submdspan(gg.m2sgs, x,y,exper::full_extent,exper::full_extent));
-                          gg.m2sgs(x,y,a1,a2) = gg.m2sgs(x,y,a1,a2) + gg.m2sgs(x,y,a2,a1);
-                      });
-        computeGradient(g->m2sgs, g->dm2sgs);
-        std::vector<std::pair<std::string, exper::mdspan<T, rnk3, layout>>> tensor_fields = {
-                {"dudm2sgs", g->dm2sgs}
-        };
 
-        writeVTK2D("output-2_" + std::to_string(t) + ".vtk", std::views::cartesian_product(ys, xs), tensor_fields, nx, ny);
       auto after_out = std::chrono::high_resolution_clock::now();
 
       output_time += after_out - before_out;
@@ -897,13 +826,13 @@ int main() {
     std::for_each(std::execution::par_unseq, iys.begin(), iys.end(),
                   [&gg, nx, ny](auto iy) {
                     auto [i, y] = iy;
-                    if (gg.flags_data(nx - 1, y, i) == gg.outlet) gg.f_data(nx - 1, y, i) = gg.f_data(nx - 2, y, i);
+                    if (gg.flags_matrix(nx - 1, y, i) == gg.outlet) gg.f_matrix(nx - 1, y, i) = gg.f_matrix(nx - 2, y, i);
                   });
     std::for_each(std::execution::par_unseq, ixs.begin(), ixs.end(),
                   [&gg, nx, ny](auto ix) {
                     auto [i,x] = ix;
-                      if (gg.flags_data(x, ny - 1, i) == gg.outlet) gg.f_data(x, ny - 1, i) = gg.f_data(x, ny - 2, i);
-                      if (gg.flags_data(x, 0, i)      == gg.outlet) gg.f_data(x, 0, i) = gg.f_data(x, 1, i);
+                      if (gg.flags_matrix(x, ny - 1, i) == gg.outlet) gg.f_matrix(x, ny - 1, i) = gg.f_matrix(x, ny - 2, i);
+                      if (gg.flags_matrix(x, 0, i)      == gg.outlet) gg.f_matrix(x, 0, i) = gg.f_matrix(x, 1, i);
                   });
   }
 
@@ -921,7 +850,7 @@ int main() {
   return 0;
 }
 
-//      auto lastx = exper::submdspan(g->f_data, nx-1, exper::full_extent, exper::full_extent);
-//      auto beforelastx = exper::submdspan(g->f_data, nx-2, exper::full_extent, exper::full_extent);
-//      auto lasty = exper::submdspan(g->f_data,exper::full_extent, ny-1, exper::full_extent);
-//      auto beforelasty = exper::submdspan(g->f_data, exper::full_extent, ny-2, exper::full_extent);
+//      auto lastx = exper::submdspan(g->f_matrix, nx-1, exper::full_extent, exper::full_extent);
+//      auto beforelastx = exper::submdspan(g->f_matrix, nx-2, exper::full_extent, exper::full_extent);
+//      auto lasty = exper::submdspan(g->f_matrix,exper::full_extent, ny-1, exper::full_extent);
+//      auto beforelasty = exper::submdspan(g->f_matrix, exper::full_extent, ny-2, exper::full_extent);
