@@ -663,43 +663,6 @@ auto cylinder_flags_initialization(Lattice& g){
 });
 }
 
-static void complete_bgk_ma2_equilibria(
-        T rho,const T& ux, const T& uy, std::array<T, 9> &eqPop, D2Q9lattice &g)
-{
-    T t0 = (T)0.25 * g.w[0];
-    T t1 = g.w[6];
-    T t2 = (T)0.5 * g.w[1];
-
-    T ux2 = ux * ux;
-    T uy2 = uy * uy;
-
-    T Cx = (T)3 * ux2 - 2;
-    T Cy = 3 * uy2 - 2;
-    eqPop[0] = t0 * (rho * Cy * Cx) - g.w[0];
-
-    T k1x = (T)3 * (ux2 - ux) + (T)1;
-    T k2x = k1x + 6 * ux;
-    T k1y = (T)3 * (uy2 - uy) + (T)1;
-    T k2y = k1y + 6 * uy;
-//    palabos -> lbm mapping:
-//    2 -> 3
-//    4 -> 4
-//    6 -> 1
-//    8 -> 2
-//    1 -> 6
-//    5 -> 8
-//    3 -> 7
-//    7 -> 5
-    eqPop[3] = -t2 * (rho * Cy * k1x) - g.w[2];
-    eqPop[4] = -t2 * (rho * k1y * Cx) - g.w[2];
-    eqPop[1] = -t2 * (rho * Cy * k2x) - g.w[2];
-    eqPop[2] = -t2 * (rho * k2y * Cx) - g.w[2];
-
-    eqPop[6] = t1 * (rho * k2y * k1x) - t1;
-    eqPop[8] = t1 * (rho * k1y * k2x) - t1;
-    eqPop[7] = t1 * (rho * k1y * k1x) - t1;
-    eqPop[5] = t1 * (rho * k2y * k2x) - t1;
-}
 
 template <typename Lattice>
 void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
@@ -749,23 +712,21 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 
     // Compute equilibrium distributions
       for (int i = 0; i < g.q; ++i) {
-          auto& iopp = g.opposite[i];
+          auto &iopp = g.opposite[i];
           T cu = g.cx[i] * ux + g.cy[i] * uy;
           T u_sq = ux * ux + uy * uy;
           T cu_sq = cu * cu;
-          T cu_cub = cu * cu_sq;
-          T cu_four = cu_sq * cu_sq;
 // Third order term
-          double feq_third_order = (1.0/6.0) * pow(g.invCslb2, 3) * cu * cu_sq -
+          double feq_third_order = (1.0 / 6.0) * pow(g.invCslb2, 3) * cu * cu_sq -
                                    0.5 * g.invCslb2 * cu * u_sq;
 
 // Fourth order term
-          double feq_fourth_order = (1.0/24.0) * pow(g.invCslb2, 4) * cu_sq * cu_sq -
+          double feq_fourth_order = (1.0 / 24.0) * pow(g.invCslb2, 4) * cu_sq * cu_sq -
                                     0.5 * pow(g.invCslb2, 2) * cu_sq * u_sq +
-                                    (1.0/8.0) * pow(g.invCslb2, 2) * u_sq * u_sq;
+                                    (1.0 / 8.0) * pow(g.invCslb2, 2) * u_sq * u_sq;
 
           u_sq = uxx + uyy;
-          cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
+          cu_sq = g.cx[i] * g.cx[i] * uxx + 2. * g.cx[i] * g.cy[i] * uxy + g.cy[i] * g.cy[i] * uyy;
 // Second order term
           double feq_second_order = 1.0 + g.invCslb2 * cu +
                                     0.5 * g.invCslb2 * g.invCslb2 * cu_sq -
@@ -935,8 +896,8 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1;
-  T Ma = 0.1;
+  T Re =80;
+  T Ma = 0.2;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
@@ -980,7 +941,7 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStrainTensor(g->velocity_matrix,g->strain_matrix,8);
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix,2);
     if (t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
