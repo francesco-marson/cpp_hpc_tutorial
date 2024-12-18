@@ -201,6 +201,94 @@ struct D2Q9lattice {
 };
 
 
+// Data structure for the D2Q9lattice
+struct D2Q9latticePalabos {
+  enum Flags{bulk,hwbb,inlet,outlet,symmetry};
+  int nx, ny;
+  const T llb;
+  const T w[9] = {
+          (T)4/(T)9, (T)1/(T)36, (T)1/(T)9, (T)1/(T)36, (T)1/(T)9,
+                     (T)1/(T)36, (T)1/(T)9, (T)1/(T)36, (T)1/(T)9
+  };
+  const std::array<int, 9> cx = {0, -1, -1, -1,  0,  1, 1, 1, 0};
+  const std::array<int, 9> cy = {0,  1,  0, -1, -1, -1, 0, 1, 1};
+  static constexpr std::array<T, 9> cnormSqrt = { 0, 2, 1, 2, 1, 2, 1, 2, 1 };
+  const std::array<T, 9> cnorm = { 0, sqrt((T)2), 1, sqrt((T)2), 1, sqrt((T)2), 1, sqrt((T)2), 1 };
+  static constexpr int d = 2;
+  static constexpr int q = 9;
+  const int number_dynamic_scalars = q;
+  const std::array<int, 9> opposite = {0,5,6,7,8,1,2,3,4};
+  // Precomputed indices for 90° rotations
+  // index =                                      {0, 1, 2, 3, 4, 5, 6, 7, 8};
+//  const std::array<int, 9> clockwise_90 =     {0, 4, 1, 2, 3, 8, 5, 6, 7};
+//  const std::array<int, 9> anticlockwise_90 = {0, 2, 3, 4, 1, 6, 7, 8, 5};
+  T cslb = 1. / sqrt(3.);
+  T cslb2 = cslb * cslb;
+  T invCslb = 1. / cslb;
+  T invCslb2 = invCslb * invCslb;
+
+  std::vector<T> buffer;
+  std::vector<Flags> flags_buffer;
+    exper::mdspan<T, rnk2, layout> rhob_matrix;
+  exper::mdspan<T, rnk3,layout> f_matrix, f_matrix_2, dynamic_matrix,velocity_matrix,rhob_matrix_;
+  exper::mdspan<T, rnk4,layout> strain_matrix;
+
+    // Take a subspan that only considers the first two indices
+// Define the full type for the submdspan
+  exper::mdspan<Flags, rnk3,layout> flags_matrix;
+
+    D2Q9latticePalabos(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
+                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars+ nx * ny * 4, 1.0),
+                                                                       flags_buffer(nx * ny * q,bulk)
+
+  {
+    f_matrix = exper::mdspan<T, rnk3,layout>(buffer.data(), nx, ny, q);
+    f_matrix_2 = exper::mdspan<T, rnk3,layout>(buffer.data() + f_matrix.size(), nx, ny, q);
+    auto velocity_matrix_starting_index = buffer.data() + f_matrix.size()+ f_matrix_2.size();
+    velocity_matrix = exper::mdspan<T, rnk3,layout>(velocity_matrix_starting_index, nx, ny, d);
+    auto rhob_matrix_starting_index = velocity_matrix_starting_index + velocity_matrix.size();
+    rhob_matrix_ = exper::mdspan<T, rnk3,layout>(rhob_matrix_starting_index, nx, ny,0);
+    auto dynamic_matrix_starting_index = rhob_matrix_starting_index + rhob_matrix_.size();
+    dynamic_matrix = exper::mdspan<T, rnk3,layout>(dynamic_matrix_starting_index, nx, ny,number_dynamic_scalars);
+    auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
+    strain_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
+
+    flags_matrix = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
+
+      // Take the subspan that only considers the first two indexes
+    rhob_matrix = exper::submdspan(rhob_matrix_, exper::full_extent, exper::full_extent, 0/*std::make_pair(0, 1)*/);
+    initialize();
+  }
+
+  void swap() {
+    std::swap(f_matrix, f_matrix_2);
+  }
+
+  inline int oppositeIndex(int i) const {
+    return opposite[i];
+  }
+
+  void initialize() {
+    for (int x = 0; x < nx; ++x) {
+      for (int y = 0; y < ny; ++y) {
+        T rhob_val = 0.0;
+        T ux = 0.0;
+        T uy = 0.0;
+        rhob_matrix(x, y) = rhob_val;
+        velocity_matrix(x, y, 0) = ux;
+        velocity_matrix(x, y, 1) = uy;
+        for (int i = 0; i < 9; ++i) {
+          T cu = 3.0 * (cx[i] * ux + cy[i] * uy);
+          T u_sq = 1.5 * (ux * ux + uy * uy);
+          f_matrix(x, y, i) = w[i] * (rhob_val+1.0) * (1 + cu + 0.5 * cu * cu - u_sq)-w[i];
+          f_matrix_2(x, y, i) = f_matrix(x, y, i); // Initialize f_2 the same way as f
+        }
+      }
+    }
+  }
+};
+
+
 struct D2Q37lattice {
     enum Flags { bulk, hwbb, inlet, outlet, symmetry };
     int nx, ny;
@@ -663,6 +751,218 @@ auto cylinder_flags_initialization(Lattice& g){
 });
 }
 
+enum {
+    // Order 0
+    M00 = 0,
+
+    // Order 1
+    M10 = 1,
+    M01 = 2,
+
+    // Order 2
+    M20 = 3,
+    M02 = 4,
+    M11 = 5,
+
+    // Order 3
+    M21 = 6,
+    M12 = 7,
+
+    // Order 4
+    M22 = 8,
+};
+enum { F00 = 0, FMP = 1, FM0 = 2, FMM = 3, F0M = 4, FPM = 5, FP0 = 6, FPP = 7, F0P = 8 };
+
+// Optimized way to compute CHs based on Palabos ordering of discrete velocities
+static std::array<T,9> HMcomputeMoments(
+        std::array<T,9> const &cell, const D2Q9latticePalabos& g)
+{
+    std::array<T,9> HM;
+    std::array<T, 9> f;
+    for (int i = 0; i < g.q; ++i) {
+    f[i] = cell[i] + g.w[i];
+    HM[i] = 0.;
+    }
+    
+    double X_M1 = f[1] + f[2] + f[3];
+    double X_P1 = f[5] + f[6] + f[7];
+    double X_0 = f[0] + f[4] + f[8];
+    
+    double Y_M1 = f[3] + f[4] + f[5];
+    double Y_P1 = f[1] + f[7] + f[8];
+    
+    // Order 0
+    HM[M00] = X_M1 + X_P1 + X_0;
+    
+    // Order 1
+    HM[M10] = X_P1 - X_M1;
+    HM[M01] = Y_P1 - Y_M1;
+    
+    // Order 2
+    HM[M20] = X_P1 + X_M1;
+    HM[M02] = Y_P1 + Y_M1;
+    HM[M11] = -f[1] + f[3] - f[5] + f[7];
+    
+    // Order 3
+    HM[M21] = f[1] - f[3] - f[5] + f[7];
+    HM[M12] = -f[1] - f[3] + f[5] + f[7];
+    
+    // Order 4
+    HM[M22] = f[1] + f[3] + f[5] + f[7];
+    
+    T rho = HM[M00];
+    T invRho = 1. / rho;
+    for (int i = 0; i < g.q; ++i) {
+    HM[i] *= invRho;
+    }
+    
+    // We come back to Hermite moments
+    T cs4 = g.cslb2 * g.cslb2;
+    HM[M20] -= g.cslb2;
+    HM[M02] -= g.cslb2;
+    
+    HM[M21] -= g.cslb2 * HM[M01];
+    HM[M12] -= g.cslb2 * HM[M10];
+    
+    HM[M22] -= (g.cslb2 * (HM[M20] + HM[M02]) + cs4);
+
+    return HM;
+};
+
+auto HMcomputeEquilibriumMoments(const std::array<T, 9> tmpf, D2Q9latticePalabos& g) -> const std::array<T,9>
+{
+    T rhob = 0.0, ux = 0.0, uy = 0.0;
+    T uxx = 0.0, uxy = 0.0, uyy = 0.0;
+    std::array<T,2> u;
+    for (int i = 0; i < g.q; ++i) {
+              rhob += tmpf[i];
+              u[0] += tmpf[i] * g.cx[i];
+              u[1] += tmpf[i] * g.cy[i];
+//        uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
+//        uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
+//        uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
+    }
+    std::array<T,9> HMeq;
+    // Order 0
+    HMeq[M00] = 1.;
+    
+    // Order 1
+    HMeq[M10] = u[0];
+    HMeq[M01] = u[1];
+    
+    // Order 2
+    HMeq[M20] = u[0] * u[0];
+    HMeq[M02] = u[1] * u[1];
+    HMeq[M11] = u[0] * u[1];
+    
+    // Order 3
+    HMeq[M21] = HMeq[M20] * u[1];
+    HMeq[M12] = HMeq[M02] * u[0];
+    
+    // Order 4
+    HMeq[M22] = HMeq[M20] * HMeq[M02];
+    return HMeq;
+};
+
+// Equilibrium populations based on 9 moments can be computed using either RM, HM, CM, HM or
+// Gauss-Hermite formalisms. Here we use central hermite moments (HMs)
+static void HMcomputeEquilibrium(
+        T rho, std::array<T,9> const &HMeq, std::array<T,9> &eq, T cs2)
+{
+    std::array<T, 2> u(HMeq[1], HMeq[2]);
+    std::array<T, 9> RMeq;
+    T cs4 = cs2 * cs2;
+
+    RMeq[M20] = HMeq[M20] + cs2;
+    RMeq[M02] = HMeq[M02] + cs2;
+
+    RMeq[M11] = HMeq[M11];
+
+    RMeq[M21] = HMeq[M21] + cs2 * u[1];
+    RMeq[M12] = HMeq[M12] + cs2 * u[0];
+
+    RMeq[M22] = HMeq[M22] + cs2 * (HMeq[M20] + HMeq[M02]) + cs4;
+
+    eq[F00] = rho * (1. - RMeq[M20] - RMeq[M02] + RMeq[M22]);
+
+    eq[FP0] = 0.5 * rho * (u[0] + RMeq[M20] - RMeq[M12] - RMeq[M22]);
+    eq[FM0] = 0.5 * rho * (-u[0] + RMeq[M20] + RMeq[M12] - RMeq[M22]);
+
+    eq[F0P] = 0.5 * rho * (u[1] + RMeq[M02] - RMeq[M21] - RMeq[M22]);
+    eq[F0M] = 0.5 * rho * (-u[1] + RMeq[M02] + RMeq[M21] - RMeq[M22]);
+
+    eq[FPP] = 0.25 * rho * (RMeq[M11] + RMeq[M21] + RMeq[M12] + RMeq[M22]);
+    eq[FMP] = 0.25 * rho * (-RMeq[M11] + RMeq[M21] - RMeq[M12] + RMeq[M22]);
+    eq[FPM] = 0.25 * rho * (-RMeq[M11] - RMeq[M21] + RMeq[M12] + RMeq[M22]);
+    eq[FMM] = 0.25 * rho * (RMeq[M11] - RMeq[M21] - RMeq[M12] + RMeq[M22]);
+};
+
+static void HMcollide(
+        std::array<T,9> &cell, T rho,  std::array<T, 2> const &u,
+        std::array<T,9> const &HM,    // Central hermite moments
+        std::array<T,9> const &HMeq,  // Equilibrium moments (central hermite)
+        std::array<T, 9> const &omega, D2Q9latticePalabos& g)
+{
+    T omega1 = omega[0];
+    T omega2 = omega[1];
+    T omega3 = omega[2];
+    T omega4 = omega[3];
+
+    T omegaBulk = omega[4];
+    T omegaPlus = (omegaBulk + omega1) / 2.;   // Notation used by Fei
+    T omegaMinus = (omegaBulk - omega1) / 2.;  // Notation used by Fei
+
+    T cs4 = g.cslb2 * g.cslb2;
+
+    // Post-collision moments.
+    std::array<T, 9> HMcoll;
+    std::array<T, 9> RMcoll;
+
+    // Collision in the Hermite moment space
+    // Order 2 (non-diagonal collision so that we can easily modify the bulk viscosity)
+    HMcoll[M20] =
+            HM[M20] - omegaPlus * (HM[M20] - HMeq[M20]) - omegaMinus * (HM[M02] - HMeq[M02]);
+    HMcoll[M02] =
+            HM[M02] - omegaMinus * (HM[M20] - HMeq[M20]) - omegaPlus * (HM[M02] - HMeq[M02]);
+
+    HMcoll[M11] = (1. - omega2) * HM[M11] + omega2 * HMeq[M11];
+
+    // Order 3
+    HMcoll[M21] = (1. - omega3) * HM[M21] + omega3 * HMeq[M21];
+    HMcoll[M12] = (1. - omega3) * HM[M12] + omega3 * HMeq[M12];
+
+    // Order 4
+    HMcoll[M22] = (1. - omega4) * HM[M22] + omega4 * HMeq[M22];
+
+    // Come back to RMcoll using relationships between HMs and RMs
+    RMcoll[M20] = HMcoll[M20] + g.cslb2;
+    RMcoll[M02] = HMcoll[M02] + g.cslb2;
+
+    RMcoll[M11] = HMcoll[M11];
+
+    RMcoll[M21] = HMcoll[M21] + g.cslb2 * u[1];
+    RMcoll[M12] = HMcoll[M12] + g.cslb2 * u[0];
+
+    RMcoll[M22] = HMcoll[M22] + g.cslb2 * (HMcoll[M20] + HMcoll[M02]) + cs4;
+
+    // Compute post collision populations from RM
+    cell[F00] = rho * (1. - RMcoll[M20] - RMcoll[M02] + RMcoll[M22]);
+
+    cell[FP0] = 0.5 * rho * (u[0] + RMcoll[M20] - RMcoll[M12] - RMcoll[M22]);
+    cell[FM0] = 0.5 * rho * (-u[0] + RMcoll[M20] + RMcoll[M12] - RMcoll[M22]);
+
+    cell[F0P] = 0.5 * rho * (u[1] + RMcoll[M02] - RMcoll[M21] - RMcoll[M22]);
+    cell[F0M] = 0.5 * rho * (-u[1] + RMcoll[M02] + RMcoll[M21] - RMcoll[M22]);
+
+    cell[FPP] = 0.25 * rho * (RMcoll[M11] + RMcoll[M21] + RMcoll[M12] + RMcoll[M22]);
+    cell[FMP] = 0.25 * rho * (-RMcoll[M11] + RMcoll[M21] - RMcoll[M12] + RMcoll[M22]);
+    cell[FPM] = 0.25 * rho * (-RMcoll[M11] - RMcoll[M21] + RMcoll[M12] + RMcoll[M22]);
+    cell[FMM] = 0.25 * rho * (RMcoll[M11] - RMcoll[M21] - RMcoll[M12] + RMcoll[M22]);
+
+    for (int i = 0; i < g.q; ++i) {
+        cell[i] -= g.w[i];
+    }
+};
 
 template <typename Lattice>
 void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
@@ -710,6 +1010,10 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     ux = g.velocity_matrix(x,y,0);
     uy = g.velocity_matrix(x,y,1);
 
+//      auto HMeq = HMcomputeEquilibriumMoments(tmpf,g);
+//      auto HM = HMcomputeMoments(tmpf,g);
+//      HMcollide(tmpf,rho,std::array<T,2>{ux,uy},HM,HMeq,std::array<T,9>{1./tau,1,1,1,1,1,1,1,1},g);
+
     // Compute equilibrium distributions
       for (int i = 0; i < g.q; ++i) {
           auto &iopp = g.opposite[i];
@@ -717,28 +1021,28 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T u_sq = ux * ux + uy * uy;
           T cu_sq = cu * cu;
 // Third order term
-          double feq_third_order = (1.0 / 6.0) * pow(g.invCslb2, 3) * cu * cu_sq -
-                                   0.5 * g.invCslb2 * cu * u_sq;
+//          double feq_third_order = (1.0 / 6.0) * pow(g.invCslb2, 3) * cu * cu_sq -
+//                                   0.5 * g.invCslb2 * cu * u_sq;
 
 // Fourth order term
-          double feq_fourth_order = (1.0 / 24.0) * pow(g.invCslb2, 4) * cu_sq * cu_sq -
-                                    0.5 * pow(g.invCslb2, 2) * cu_sq * u_sq +
-                                    (1.0 / 8.0) * pow(g.invCslb2, 2) * u_sq * u_sq;
+//          double feq_fourth_order = (1.0 / 24.0) * pow(g.invCslb2, 4) * cu_sq * cu_sq -
+//                                    0.5 * pow(g.invCslb2, 2) * cu_sq * u_sq +
+//                                    (1.0 / 8.0) * pow(g.invCslb2, 2) * u_sq * u_sq;
 
-          u_sq = uxx + uyy;
-          cu_sq = g.cx[i] * g.cx[i] * uxx + 2. * g.cx[i] * g.cy[i] * uxy + g.cy[i] * g.cy[i] * uyy;
+//          u_sq = uxx + uyy;
+//          cu_sq = g.cx[i] * g.cx[i] * uxx + 2. * g.cx[i] * g.cy[i] * uxy + g.cy[i] * g.cy[i] * uyy;
 // Second order term
-          double feq_second_order = 1.0 + g.invCslb2 * cu +
-                                    0.5 * g.invCslb2 * g.invCslb2 * cu_sq -
-                                    0.5 * g.invCslb2 * u_sq;
+//          double feq_second_order = 1.0 + g.invCslb2 * cu +
+//                                    0.5 * g.invCslb2 * g.invCslb2 * cu_sq -
+//                                    0.5 * g.invCslb2 * u_sq;
 
 
-          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order + feq_fourth_order) - g.w[i];
+//          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order /*+ feq_fourth_order*/) - g.w[i];
 
 
-//      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
+      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
-
+//
           // Collide step
           tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
 //          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
@@ -880,7 +1184,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
@@ -896,8 +1200,8 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =80;
-  T Ma = 0.2;
+  T Re =50000;
+  T Ma = 0.1;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
