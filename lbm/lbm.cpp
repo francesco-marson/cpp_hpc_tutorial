@@ -354,62 +354,81 @@ void computeGradient(const exper::mdspan<T, rnk4, layout>& m2sgs,
                   });
 }
 
-// Function to compute stress tensor components given the velocity field
+
+std::vector<T> getFiniteDifferenceCoefficients(int order) {
+    switch (order) {
+        case 2:
+            return {1.0 / 2.0};
+        case 4:
+            return {2.0 / 3.0, -1.0 / 12.0};
+        case 6:
+            return {3.0 / 4.0, -3.0 / 20.0, 1.0 / 60.0};
+        case 8:
+            return {4.0 / 5.0, -1.0 / 5.0, 4.0 / 105.0, -1.0 / 280.0};
+        default:
+            throw std::invalid_argument("Unsupported order");
+    }
+}
+
+
 void computeStrainTensor(const exper::mdspan<T, rnk3, layout>& velocity,
-                         exper::mdspan<T, rnk4, layout>& stress_tensor) {
+                         exper::mdspan<T, rnk4, layout>& strain_tensor,
+                         int order = 6) {
 
     auto nx = velocity.extent(0);
     auto ny = velocity.extent(1);
 
     // Check extents matching
-    assert(nx == stress_tensor.extent(0) && ny == stress_tensor.extent(1));
+    assert(nx == strain_tensor.extent(0) && ny == strain_tensor.extent(1));
+
+    // Get the coefficients and kernel half-width for a specific order
+    const auto coeff = getFiniteDifferenceCoefficients(order);
+    int kernel_half_width = (coeff.size() - 1) / 2 + 1;
 
     // Cartesian product of indexes
     auto xs = std::views::iota(0, nx);
     auto ys = std::views::iota(0, ny);
     auto xys = std::views::cartesian_product(xs, ys);
 
-    // Compute the stress tensor in parallel
+    // Compute the strain tensor in parallel
     std::for_each(std::execution::par, xys.begin(), xys.end(),
-                  [&stress_tensor, &velocity, nx, ny](auto coord) {
+                  [&strain_tensor, &velocity, nx, ny, coeff=coeff.data(), kernel_half_width](auto coord) {
                       auto [x, y] = coord;
                       T du_dx = 0.0;
                       T du_dy = 0.0;
                       T dv_dx = 0.0;
                       T dv_dy = 0.0;
 
-                      // 6th order finite differences coefficients
-                      constexpr T coeff[4] = {1.0 / 60.0, -3.0 / 20.0, 3.0 / 4.0, 0.0};
-
                       // Calculate gradient in the x direction for u and v components
-                      for (int k = 1; k <= 3; ++k) {
+                      for (int k = 1; k <= kernel_half_width; ++k) {
                           int xp_k = (x + k + nx) % nx;
                           int xm_k = (x - k + nx) % nx;
 
                           du_dx += coeff[k - 1] * (velocity(xp_k, y, 0) - velocity(xm_k, y, 0));
                           dv_dx += coeff[k - 1] * (velocity(xp_k, y, 1) - velocity(xm_k, y, 1));
                       }
-                      du_dx /= 2; // Because we consider central difference
-                      dv_dx /= 2; // Because we consider central difference
+                      du_dx /= 2; // Central difference adjustment
+                      dv_dx /= 2; // Central difference adjustment
 
                       // Calculate gradient in the y direction for u and v components
-                      for (int k = 1; k <= 3; ++k) {
+                      for (int k = 1; k <= kernel_half_width; ++k) {
                           int yp_k = (y + k + ny) % ny;
                           int ym_k = (y - k + ny) % ny;
 
                           du_dy += coeff[k - 1] * (velocity(x, yp_k, 0) - velocity(x, ym_k, 0));
                           dv_dy += coeff[k - 1] * (velocity(x, yp_k, 1) - velocity(x, ym_k, 1));
                       }
-                      du_dy /= 2; // Because we consider central difference
-                      dv_dy /= 2; // Because we consider central difference
+                      du_dy /= 2; // Central difference adjustment
+                      dv_dy /= 2; // Central difference adjustment
 
-                      // Compute the components of the stress tensor
-                      stress_tensor(x, y, 0, 0) = 2 * du_dx;      // Tau_xx
-                      stress_tensor(x, y, 1, 1) = 2 * dv_dy;      // Tau_yy
-                      stress_tensor(x, y, 0, 1) = (du_dy + dv_dx); // Tau_xy
-                      stress_tensor(x, y, 1, 0) = stress_tensor(x, y, 0, 1);  // Tau_yx = Tau_xy
+                      // Compute the components of the strain tensor
+                      strain_tensor(x, y, 0, 0) = 2 * du_dx;      // Tau_xx
+                      strain_tensor(x, y, 1, 1) = 2 * dv_dy;      // Tau_yy
+                      strain_tensor(x, y, 0, 1) = (du_dy + dv_dx); // Tau_xy
+                      strain_tensor(x, y, 1, 0) = strain_tensor(x, y, 0, 1);  // Tau_yx = Tau_xy
                   });
 }
+
 
 
 template <typename Lattice>
@@ -709,8 +728,8 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      rhob += tmpf[i];
 //      ux += tmpf[i] * g.cx[i];
 //      uy += tmpf[i] * g.cy[i];
-      uxx += (tmpf[i]+g.w[i]) * g.cx[i]* g.cx[i];
-      uyy += (tmpf[i]+g.w[i]) * g.cy[i]* g.cy[i];
+      uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
+      uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
       uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
     }
 
@@ -736,13 +755,27 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T cu_sq = cu * cu;
           T cu_cub = cu * cu_sq;
           T cu_four = cu_sq * cu_sq;
+// Third order term
+          double feq_third_order = (1.0/6.0) * pow(g.invCslb2, 3) * cu * cu_sq -
+                                   0.5 * g.invCslb2 * cu * u_sq;
+
+// Fourth order term
+          double feq_fourth_order = (1.0/24.0) * pow(g.invCslb2, 4) * cu_sq * cu_sq -
+                                    0.5 * pow(g.invCslb2, 2) * cu_sq * u_sq +
+                                    (1.0/8.0) * pow(g.invCslb2, 2) * u_sq * u_sq;
+
           u_sq = uxx + uyy;
           cu_sq = g.cx[i]*g.cx[i]*uxx+2.*g.cx[i]*g.cy[i]*uxy+g.cy[i]*g.cy[i]*uyy;
+// Second order term
+          double feq_second_order = 1.0 + g.invCslb2 * cu +
+                                    0.5 * g.invCslb2 * g.invCslb2 * cu_sq -
+                                    0.5 * g.invCslb2 * u_sq;
 
-//          complete_bgk_ma2_equilibria(rho,ux,uy,feq,g);
+
+          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order + feq_fourth_order) - g.w[i];
 
 
-      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
+//      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 
           // Collide step
@@ -886,7 +919,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
@@ -947,7 +980,7 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStrainTensor(g->velocity_matrix,g->strain_matrix);
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix,8);
     if (t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
