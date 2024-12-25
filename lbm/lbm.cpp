@@ -751,6 +751,8 @@ auto cylinder_flags_initialization(Lattice& g){
 });
 }
 
+struct CM{
+
 enum {
     // Order 0
     M00 = 0,
@@ -771,10 +773,10 @@ enum {
     // Order 4
     M22 = 8,
 };
-enum { F00 = 0, FMP = 1, FM0 = 2, FMM = 3, F0M = 4, FPM = 5, FP0 = 6, FPP = 7, F0P = 8 };
+enum { F00 = 0, FMP = 1, FM0 = 2, FMM = 3, F0M = 4, FPM = 5, FP0 = 6, FPP = 7, F0P = 8 };// use this to generalize
 
 // Optimized way to compute CHs based on Palabos ordering of discrete velocities
-static std::array<T,9> HMcomputeMoments(
+std::array<T,9> HMcomputeMoments(
         std::array<T,9> const &cell, const D2Q9latticePalabos& g)
 {
     std::array<T,9> HM;
@@ -813,7 +815,7 @@ static std::array<T,9> HMcomputeMoments(
     T rho = HM[M00];
     T invRho = 1. / rho;
     for (int i = 0; i < g.q; ++i) {
-    HM[i] *= invRho;
+        HM[i] *= invRho;
     }
     
     // We come back to Hermite moments
@@ -829,22 +831,25 @@ static std::array<T,9> HMcomputeMoments(
     return HM;
 };
 
-auto HMcomputeEquilibriumMoments(const std::array<T, 9> tmpf, D2Q9latticePalabos& g) -> const std::array<T,9>
+auto HMcomputeEquilibriumMoments(T rho, std::array<T,2> u, const std::array<T, 9> tmpf, D2Q9latticePalabos& g) -> const std::array<T,9>
 {
-    T rhob = 0.0, ux = 0.0, uy = 0.0;
-    T uxx = 0.0, uxy = 0.0, uyy = 0.0;
-    std::array<T,2> u;
-    for (int i = 0; i < g.q; ++i) {
-              rhob += tmpf[i];
-              u[0] += tmpf[i] * g.cx[i];
-              u[1] += tmpf[i] * g.cy[i];
-//        uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
-//        uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
-//        uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
-    }
+//    T rhob = 0.0, ux = 0.0, uy = 0.0;
+////    T uxx = 0.0, uxy = 0.0, uyy = 0.0;
+//    std::array<T,2> u;
+//    for (int i = 0; i < 9; ++i) {
+//              rhob += tmpf[i];
+//              u[0] += tmpf[i] * g.cx[i];
+//              u[1] += tmpf[i] * g.cy[i];
+////        uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
+////        uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
+////        uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
+//    }
+//    T rho = rhob+1.0;
+//    u[0] /= rho;
+//    u[1] /= rho;
     std::array<T,9> HMeq;
     // Order 0
-    HMeq[M00] = 1.;
+    HMeq[M00] = rho;
     
     // Order 1
     HMeq[M10] = u[0];
@@ -864,9 +869,57 @@ auto HMcomputeEquilibriumMoments(const std::array<T, 9> tmpf, D2Q9latticePalabos
     return HMeq;
 };
 
+
+  // General way to compute HMs
+  std::array<T,9> HMcomputeMoments2(
+          std::array<T,9> const cell, const D2Q9latticePalabos& g){
+
+        std::array<T,9> HM;
+      std::array<T, 9> f;
+      for (int i = 0; i<9; ++i) {
+          f[i] = cell[i] + g.w[i];
+          HM[i] = 0.;
+      }
+
+      T Hxx = 0.;
+      T Hyy = 0.;
+
+      for (int i = 0; i<9; ++i) {
+
+          Hxx = g.cx[i] * g.cx[i] - g.cslb2;
+          Hyy = g.cy[i] * g.cy[i] - g.cslb2;
+
+          // Order 0
+          HM[M00] += f[i];
+
+          // Order 1
+          HM[M10] += g.cx[i] * f[i];
+          HM[M01] += g.cy[i] * f[i];
+
+          // Order 2
+          HM[M20] += Hxx * f[i];
+          HM[M02] += Hyy * f[i];
+          HM[M11] += g.cx[i] * g.cy[i] * f[i];
+
+          // Order 3
+          HM[M21] += Hxx * g.cy[i] * f[i];
+          HM[M12] += g.cx[i] * Hyy * f[i];
+
+          // Order 4
+          HM[M22] += Hxx * Hyy * f[i];
+      }
+
+      T rho = HM[M00];
+      T invRho = 1. / rho;
+      for (int i = 0; i<9; ++i) {
+          HM[i] *= invRho;
+      }
+      return HM;
+  }
+
 // Equilibrium populations based on 9 moments can be computed using either RM, HM, CM, HM or
 // Gauss-Hermite formalisms. Here we use central hermite moments (HMs)
-static void HMcomputeEquilibrium(
+void HMcomputeEquilibrium(
         T rho, std::array<T,9> const &HMeq, std::array<T,9> &eq, T cs2)
 {
     std::array<T, 2> u(HMeq[1], HMeq[2]);
@@ -895,14 +948,15 @@ static void HMcomputeEquilibrium(
     eq[FMP] = 0.25 * rho * (-RMeq[M11] + RMeq[M21] - RMeq[M12] + RMeq[M22]);
     eq[FPM] = 0.25 * rho * (-RMeq[M11] - RMeq[M21] + RMeq[M12] + RMeq[M22]);
     eq[FMM] = 0.25 * rho * (RMeq[M11] - RMeq[M21] - RMeq[M12] + RMeq[M22]);
-};
+}
 
-static void HMcollide(
-        std::array<T,9> &cell, T rho,  std::array<T, 2> const &u,
-        std::array<T,9> const &HM,    // Central hermite moments
-        std::array<T,9> const &HMeq,  // Equilibrium moments (central hermite)
+std::array<T,9> HMcollide(
+        T rho,  std::array<T, 2> const &u,
+        std::array<T,9> const &HM,    // hermite moments
+        std::array<T,9> const &HMeq,  // Equilibrium moments (hermite)
         std::array<T, 9> const &omega, D2Q9latticePalabos& g)
 {
+    std::array<T,9> cell;
     T omega1 = omega[0];
     T omega2 = omega[1];
     T omega3 = omega[2];
@@ -962,6 +1016,8 @@ static void HMcollide(
     for (int i = 0; i < g.q; ++i) {
         cell[i] -= g.w[i];
     }
+    return cell;
+}
 };
 
 template <typename Lattice>
@@ -977,10 +1033,11 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     auto yxs = std::views::cartesian_product(ys, xs);
     auto xys = std::views::cartesian_product(xs, ys);
     auto iyxs = std::views::cartesian_product(is,ys, xs);
+    CM cm;
 
 
   // Parallel loop ensuring thread safety
-  std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega,tau, ulb](auto idx) {
+  std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega,tau, ulb,&cm](auto idx) {
     auto [y,x] = idx;
     std::array<T, 9> tmpf{0};
     std::array<T, 9> feq{0};
@@ -988,9 +1045,9 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     T uxx = 0.0, uxy = 0.0, uyy = 0.0;
     for (int i = 0; i < g.q; ++i) {
       tmpf[i] = g.f_matrix(x, y, i);
-//      rhob += tmpf[i];
-//      ux += tmpf[i] * g.cx[i];
-//      uy += tmpf[i] * g.cy[i];
+      rhob += tmpf[i];
+      ux += tmpf[i] * g.cx[i];
+      uy += tmpf[i] * g.cy[i];
       uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
       uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
       uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
@@ -1010,9 +1067,11 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     ux = g.velocity_matrix(x,y,0);
     uy = g.velocity_matrix(x,y,1);
 
-//      auto HMeq = HMcomputeEquilibriumMoments(tmpf,g);
-//      auto HM = HMcomputeMoments(tmpf,g);
-//      HMcollide(tmpf,rho,std::array<T,2>{ux,uy},HM,HMeq,std::array<T,9>{1./tau,1,1,1,1,1,1,1,1},g);
+      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
+      auto HM = cm.HMcomputeMoments2(tmpf,g);
+      T omega2 = omega;//1./(tau-0.5);
+      tmpf = cm.HMcollide(rho,std::array<T,2>{ux,uy},HM,HMeq,std::array<T,9>{omega2,omega2,omega2,omega2,0,1,1,1,1},g);
+//      printf("%f,%f",tmpf[1], tmpf2[1]);
 
     // Compute equilibrium distributions
       for (int i = 0; i < g.q; ++i) {
@@ -1040,11 +1099,11 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order /*+ feq_fourth_order*/) - g.w[i];
 
 
-      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
+//      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //
           // Collide step
-          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+//          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
 //          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
 
           // Streaming with consideration for periodic boundaries
@@ -1200,7 +1259,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =50000;
+  T Re =50;
   T Ma = 0.1;
 
   // reference dimensions
@@ -1211,8 +1270,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = /*100;*/Tlb;
-  int outputIter = num_steps / 60;
+  int num_steps = Tlb;
+  int outputIter = num_steps / 10;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
