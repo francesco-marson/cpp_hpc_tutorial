@@ -1099,19 +1099,19 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     uyy /= rho;
 //    ux = g.velocity_matrix(x,y,0);
 //    uy = g.velocity_matrix(x,y,1);
-      std::array<T,37> fneq{0};
+      std::array<T,37> ffneq{0};
       for (int i = 0; i < g.q; ++i) {
-          std::for_each(ab.begin(),ab.end(),[&fneq = fneq[i],&g,i,&tau,&rho,&x,&y](auto&& idx){
+          std::for_each(ab.begin(),ab.end(),[&ffneq = ffneq[i],&g,i,&tau,&rho,&x,&y](auto&& idx){
               auto [b,a] = idx;
-              fneq +=  (g.c[a][i]* g.c[b][i]-g.cslb2*(a==b?1:0))*g.strain_matrix(x,y,a,b)*0.5;
+              ffneq +=  (g.c[a][i]* g.c[b][i]-g.cslb2*(a==b?1:0))*g.strain_matrix(x,y,a,b)*0.5;
           });
-          fneq[i] *= -g.w[i]*rho/g.cslb2;
+          ffneq[i] *= -g.w[i]*rho/g.cslb2;
       }
       // Compute
 //      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
 //      auto HMeq = cm.HMcomputeEquilibriumMomentsClosure(rho,std::array<T,2>{ux,uy},uxx,uxy,uyy,tmpf,g);
 //      auto HM = cm.HMcomputeMoments2(tmpf,g);
-//      auto HMneq = cm.HMcomputeMoments2(fneq,g);
+//      auto HMneq = cm.HMcomputeMoments2(ffneq,g);
 //      std::array<T,9> HMeq2{0};
 //      for (int i = 0; i < 9; ++i) {
 //          HMeq2[i] = HM[i]-HMeq[i];
@@ -1163,9 +1163,11 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //
           // Collide step
 //          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
-//          tmpf[i] = (1.0 - omega) * (feq[i]+fneq[i]) + omega * feq[i];
-          T feq_sgs = tmpf[i]-fneq[i] - feq[i];
-          tmpf[i] -= omega*fneq[i] + omega/**0.999*/*feq_sgs;
+//          tmpf[i] = (1.0 - omega) * (feq[i]+ffneq[i]) + omega * feq[i];
+          T feq_sgs = tmpf[i]-ffneq[i] - feq[i];
+          T fneq = tmpf[i] - feq[i];
+          T omega_sgs = -omega*0.99;
+          tmpf[i] = (feq[i]+feq_sgs+ffneq[i]) + omega_sgs*feq_sgs -omega*ffneq[i] ;
 
 //          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
 
@@ -1306,7 +1308,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
