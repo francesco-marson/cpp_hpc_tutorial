@@ -124,6 +124,10 @@ struct D2Q9lattice {
   const T w[9] = {4. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 9., 1. / 36., 1. / 36., 1. / 36., 1. / 36.};
   const std::array<int, 9> cx = {0, 1, 0, -1, 0, 1, -1, -1, 1};
   const std::array<int, 9> cy = {0, 0, 1, 0, -1, 1, 1, -1, -1};
+  const int c[2][9] = {
+        { 0, 1, 0, -1, 0, 1, -1, -1, 1 },
+        { 0, 0, 1, 0, -1, 1, 1, -1, -1 }
+    };
   static constexpr std::array<T, 9> cnormSqrt = {0, 1, 1, 1, 1, 2, 2, 2, 2};
   const std::array<T, 9> cnorm = {0, 1, 1, 1, 1, sqrt((T)2), sqrt((T)2), sqrt((T)2), sqrt((T)2)};
   static constexpr int d = 2;
@@ -212,6 +216,10 @@ struct D2Q9latticePalabos {
   };
   const std::array<int, 9> cx = {0, -1, -1, -1,  0,  1, 1, 1, 0};
   const std::array<int, 9> cy = {0,  1,  0, -1, -1, -1, 0, 1, 1};
+    const int c[2][9] = {
+            {0, -1, -1, -1,  0,  1, 1, 1, 0},
+            {0,  1,  0, -1, -1, -1, 0, 1, 1}
+    };
   static constexpr std::array<T, 9> cnormSqrt = { 0, 2, 1, 2, 1, 2, 1, 2, 1 };
   const std::array<T, 9> cnorm = { 0, sqrt((T)2), 1, sqrt((T)2), 1, sqrt((T)2), 1, sqrt((T)2), 1 };
   static constexpr int d = 2;
@@ -311,6 +319,12 @@ struct D2Q37lattice {
 0, 1, 1, 1, 2, 2, 3, 1, 2, 3, 3, 2, 1, 2, 1, 1, 0, 0, 0};
     const std::array<int, 37> cy = {0, 3, 2, 1, 2, 1, 1, 0, 0, 0, -1, -1, -1, -2, -2, -3, -1, -2, -3, \
 -3, -2, -1, -2, -1, -1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 1, 2, 3};
+    const int c[2][37] ={
+            {0, -1, -1, -1, -2, -2, -3, -1, -2, -3, -3, -2, -1, -2, -1, -1, 0, 0, \
+0, 1, 1, 1, 2, 2, 3, 1, 2, 3, 3, 2, 1, 2, 1, 1, 0, 0, 0},
+            {0, 3, 2, 1, 2, 1, 1, 0, 0, 0, -1, -1, -1, -2, -2, -3, -1, -2, -3, \
+-3, -2, -1, -2, -1, -1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 1, 2, 3}
+    };
     const std::array<T, 37> cnormSqr = {
             0,  10, 5, 2, 8, 5,  10, 1, 4, 9,  10, 5, 2, 8, 5,  10, 1, 4, 9,
             10, 5,  2, 8, 5, 10, 1,  4, 9, 10, 5,  2, 8, 5, 10, 1,  4, 9};
@@ -833,20 +847,6 @@ std::array<T,9> HMcomputeMoments(
 
 auto HMcomputeEquilibriumMoments(T rho, std::array<T,2> u, const std::array<T, 9> tmpf, D2Q9latticePalabos& g) -> const std::array<T,9>
 {
-//    T rhob = 0.0, ux = 0.0, uy = 0.0;
-////    T uxx = 0.0, uxy = 0.0, uyy = 0.0;
-//    std::array<T,2> u;
-//    for (int i = 0; i < 9; ++i) {
-//              rhob += tmpf[i];
-//              u[0] += tmpf[i] * g.cx[i];
-//              u[1] += tmpf[i] * g.cy[i];
-////        uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
-////        uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
-////        uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
-//    }
-//    T rho = rhob+1.0;
-//    u[0] /= rho;
-//    u[1] /= rho;
     std::array<T,9> HMeq;
     // Order 0
     HMeq[M00] = rho;
@@ -866,6 +866,36 @@ auto HMcomputeEquilibriumMoments(T rho, std::array<T,2> u, const std::array<T, 9
     
     // Order 4
     HMeq[M22] = HMeq[M20] * HMeq[M02];
+    return HMeq;
+};
+
+
+auto HMcomputeEquilibriumMomentsClosure(T rho, std::array<T,2> u, T uxx, T uxy, T uyy, const std::array<T, 9> tmpf, D2Q9latticePalabos& g) -> const std::array<T,9>
+{
+    std::array<T,9> HMeq;
+    // Order 0
+    HMeq[M00] = rho;
+
+    // Order 1
+    HMeq[M10] = u[0];
+    HMeq[M01] = u[1];
+
+    // Order 2
+    HMeq[M20] = uxx;
+//    HMeq[M20] = u[0] * u[0];
+    HMeq[M02] = uyy;
+//    HMeq[M02] = u[1] * u[1];
+    HMeq[M11] = uxy;
+//    HMeq[M11] = u[0] * u[1];
+
+    // Order 3
+    HMeq[M21] = HMeq[M20] * u[1];
+    HMeq[M12] = HMeq[M02] * u[0];
+//    HMeq[M21] = u[0]*u[0] * u[1];
+//    HMeq[M12] = u[1]*u[1] * u[0];
+
+    // Order 4
+    HMeq[M22] = u[0]*u[0] * u[1]*u[1];
     return HMeq;
 };
 
@@ -1039,38 +1069,67 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
   // Parallel loop ensuring thread safety
   std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega,tau, ulb,&cm](auto idx) {
     auto [y,x] = idx;
-    std::array<T, 9> tmpf{0};
-    std::array<T, 9> feq{0};
+    std::array<T, 37> tmpf{0};
+    std::array<T, 37> feq{0};
     T rhob = 0.0, ux = 0.0, uy = 0.0;
     T uxx = 0.0, uxy = 0.0, uyy = 0.0;
     for (int i = 0; i < g.q; ++i) {
       tmpf[i] = g.f_matrix(x, y, i);
       rhob += tmpf[i];
-      ux += tmpf[i] * g.cx[i];
-      uy += tmpf[i] * g.cy[i];
-      uxx += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
-      uyy += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
-      uxy += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
+      ux   += (tmpf[i]+g.w[i]) * g.cx[i];
+      uy   += (tmpf[i]+g.w[i]) * g.cy[i];
+      uxx  += (tmpf[i]+g.w[i]) * (g.cx[i]* g.cx[i]-g.cslb2);
+      uyy  += (tmpf[i]+g.w[i]) * (g.cy[i]* g.cy[i]-g.cslb2);
+      uxy  += (tmpf[i]+g.w[i]) * g.cx[i]* g.cy[i];
     }
-
-    // Compute macroscopic density and velocities
+    std::array<T,2> u {ux,uy};
+    auto alpha = std::views::iota(0,2);
+    auto beta = std::views::iota(0,2);
+    auto ab = std::views::cartesian_product(alpha,beta);
+//macroscopic density and velocities
     rhob = g.rhob_matrix(x,y);
     T rho = rhob +1.0;
-//    ux /= rho;
-//    uy /= rho;
-    uxx += tau*g.cslb2*rho*g.strain_matrix(x,y,0,0);
-    uxy += tau*g.cslb2*rho*g.strain_matrix(x,y,0,1);
-    uyy += tau*g.cslb2*rho*g.strain_matrix(x,y,1,1);
+    ux /= rho;
+    uy /= rho;
+//    uxx += -(tau*(tau-0.5)-(tau-0.5))*g.cslb2*rho*g.strain_matrix(x,y,0,0);
+//    uxy += -(tau*(tau-0.5)-(tau-0.5))*g.cslb2*rho*g.strain_matrix(x,y,0,1);
+//    uyy += -(tau*(tau-0.5)-(tau-0.5))*g.cslb2*rho*g.strain_matrix(x,y,1,1);
     uxx /= rho;
     uxy /= rho;
     uyy /= rho;
-    ux = g.velocity_matrix(x,y,0);
-    uy = g.velocity_matrix(x,y,1);
+//    ux = g.velocity_matrix(x,y,0);
+//    uy = g.velocity_matrix(x,y,1);
+      std::array<T,37> fneq{0};
+      for (int i = 0; i < g.q; ++i) {
+          std::for_each(ab.begin(),ab.end(),[&fneq = fneq[i],&g,i,&tau,&rho,&x,&y](auto&& idx){
+              auto [b,a] = idx;
+              fneq +=  (g.c[a][i]* g.c[b][i]-g.cslb2*(a==b?1:0))*g.strain_matrix(x,y,a,b)*0.5;
+          });
+          fneq[i] *= -g.w[i]*rho/g.cslb2;
+      }
+      // Compute
+//      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
+//      auto HMeq = cm.HMcomputeEquilibriumMomentsClosure(rho,std::array<T,2>{ux,uy},uxx,uxy,uyy,tmpf,g);
+//      auto HM = cm.HMcomputeMoments2(tmpf,g);
+//      auto HMneq = cm.HMcomputeMoments2(fneq,g);
+//      std::array<T,9> HMeq2{0};
+//      for (int i = 0; i < 9; ++i) {
+//          HMeq2[i] = HM[i]-HMeq[i];
+//      }
+//      // Order 3
+//      HMeq2[cm.M21] = u[0]*u[0] * u[1];
+//      HMeq2[cm.M12] =  u[1]* u[1] * u[0];
+//
+//      // Order 4
+//      HMeq2[cm.M22] = HMeq2[cm.M20] * HMeq2[cm.M02];
 
-      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
-      auto HM = cm.HMcomputeMoments2(tmpf,g);
-      T omega2 = omega;//1./(tau-0.5);
-      tmpf = cm.HMcollide(rho,std::array<T,2>{ux,uy},HM,HMeq,std::array<T,9>{omega2,omega2,omega2,omega2,0,1,1,1,1},g);
+//      HMeq[cm.M20] = HM[cm.M20];
+//      HMeq[cm.M02] = HM[cm.M02];
+//      HMeq[cm.M11] = HM[cm.M11];
+//      HMeq = HM;
+//      T omega2 = omega;//1./(tau-0.5);
+//      omega = 2;
+//      tmpf = cm.HMcollide(rho,std::array<T,2>{ux,uy},HM,HMeq2,std::array<T,9>{omega2,omega2,0.1,0.1,0.1,0.1,1,1,1},g);
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
     // Compute equilibrium distributions
@@ -1099,11 +1158,15 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order /*+ feq_fourth_order*/) - g.w[i];
 
 
-//      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
+      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //
           // Collide step
 //          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+//          tmpf[i] = (1.0 - omega) * (feq[i]+fneq[i]) + omega * feq[i];
+          T feq_sgs = tmpf[i]-fneq[i] - feq[i];
+          tmpf[i] -= omega*fneq[i] + omega/**0.999*/*feq_sgs;
+
 //          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
 
           // Streaming with consideration for periodic boundaries
@@ -1243,7 +1306,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
+  auto g = std::make_unique<D2Q9lattice>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
@@ -1259,7 +1322,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =50;
+  T Re =100000;
   T Ma = 0.1;
 
   // reference dimensions
@@ -1276,7 +1339,7 @@ int main() {
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
   printf("warm_up_iter = %d\n", warm_up_iter);
-  printf("u_lb = %f\ntau = %f\n", ulb,tau);
+  printf("u_lb = %f\ntau = %f\nomega=%f\n", ulb,tau,1./tau);
 
 //  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
 //  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-20));
@@ -1304,7 +1367,7 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStrainTensor(g->velocity_matrix,g->strain_matrix,2);
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix,6);
     if (t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
