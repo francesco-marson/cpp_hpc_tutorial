@@ -1069,8 +1069,8 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
   // Parallel loop ensuring thread safety
   std::for_each(std::execution::par_unseq, yxs.begin(), yxs.end(), [&g, omega,tau, ulb,&cm](auto idx) {
     auto [y,x] = idx;
-    std::array<T, 37> tmpf{0};
-    std::array<T, 37> feq{0};
+    std::array<T, 9> tmpf{0};
+    std::array<T, 9> feq{0};
     T rhob = 0.0, ux = 0.0, uy = 0.0;
     T uxx = 0.0, uxy = 0.0, uyy = 0.0;
     for (int i = 0; i < g.q; ++i) {
@@ -1099,7 +1099,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
     uyy /= rho;
 //    ux = g.velocity_matrix(x,y,0);
 //    uy = g.velocity_matrix(x,y,1);
-      std::array<T,37> ffneq{0};
+      std::array<T,9> ffneq{0};
       for (int i = 0; i < g.q; ++i) {
           std::for_each(ab.begin(),ab.end(),[&ffneq = ffneq[i],&g,i,&tau,&rho,&x,&y](auto&& idx){
               auto [b,a] = idx;
@@ -1108,7 +1108,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           ffneq[i] *= -g.w[i]*rho/g.cslb2;
       }
       // Compute
-//      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
+      auto HMeq = cm.HMcomputeEquilibriumMoments(rho,std::array<T,2>{ux,uy},tmpf,g);
 //      auto HMeq = cm.HMcomputeEquilibriumMomentsClosure(rho,std::array<T,2>{ux,uy},uxx,uxy,uyy,tmpf,g);
 //      auto HM = cm.HMcomputeMoments2(tmpf,g);
 //      auto HMneq = cm.HMcomputeMoments2(ffneq,g);
@@ -1127,11 +1127,28 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      HMeq[cm.M02] = HM[cm.M02];
 //      HMeq[cm.M11] = HM[cm.M11];
 //      HMeq = HM;
-//      T omega2 = omega;//1./(tau-0.5);
+      T omega2 = omega;//1./(tau-0.5);
 //      omega = 2;
-//      tmpf = cm.HMcollide(rho,std::array<T,2>{ux,uy},HM,HMeq2,std::array<T,9>{omega2,omega2,0.1,0.1,0.1,0.1,1,1,1},g);
+      feq = cm.HMcollide(rho,std::array<T,2>{ux,uy},HMeq,HMeq,std::array<T,9>{omega2,omega2,0.1,0.1,0.1,0.1,1,1,1},g);
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
+
+      T Cs = 0.18;
+      T delta = 1.;
+      // Compute strain rate tensor components
+      T Sxx = g.strain_matrix(x,y,0,0)*0.5;
+      T Syy = g.strain_matrix(x,y,1,1)*0.5;
+      T Sxy = g.strain_matrix(x,y,1,0)*0.5;
+
+      // Compute the magnitude of the strain rate tensor
+      T S_mag = std::sqrt(2.0 * (Sxx * Sxx + Syy * Syy + 2.0 * Sxy * Sxy));
+
+      // Compute the eddy viscosity
+      T eddy_viscosity = 2.*(Cs * delta) * (Cs * delta) * S_mag;
+      T tau_eddy = eddy_viscosity/g.cslb2+0.5/*+tau*/;
+      T omega_eddy = 1./tau_eddy;
+
+//      printf("%e,%e\n",omega,omega_eddy);
     // Compute equilibrium distributions
       for (int i = 0; i < g.q; ++i) {
           auto &iopp = g.opposite[i];
@@ -1158,7 +1175,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //          feq[i] = g.w[i] * rho * (feq_second_order + feq_third_order /*+ feq_fourth_order*/) - g.w[i];
 
 
-      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
+//      feq[i] = g.w[i] * rho * (1.0 + g.invCslb2 * cu + 0.5*g.invCslb2*g.invCslb2 * cu_sq - 0.5*g.invCslb2*u_sq)-g.w[i];
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //
           // Collide step
@@ -1166,10 +1183,14 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //          tmpf[i] = (1.0 - omega) * (feq[i]+ffneq[i]) + omega * feq[i];
           T feq_sgs = tmpf[i]-ffneq[i] - feq[i];
           T fneq = tmpf[i] - feq[i];
-          T omega_sgs = -omega*0.99;
-          tmpf[i] = (feq[i]+feq_sgs+ffneq[i]) + omega_sgs*feq_sgs -omega*ffneq[i] ;
+          T omega_pr = omega - 1.0;
+          T omega_th = omega;
+          T omega_nm = 0;
+          T omega_sgs = 2.-omega_eddy;//0.86*omega;
+//          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * ffneq[i] - omega_sgs * feq_sgs;
+          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
 
-//          T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
+//        T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
 
           // Streaming with consideration for periodic boundaries
           int x_stream = x + g.cx[i];
@@ -1308,7 +1329,7 @@ int main() {
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
-  auto g = std::make_unique<D2Q37lattice>(nx, ny,llb);
+  auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
     auto& gg = *g;
 
   // indexes
@@ -1335,8 +1356,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = Tlb;
-  int outputIter = num_steps / 10;
+  int num_steps = 5.*Tlb;
+  int outputIter = num_steps / 100;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
