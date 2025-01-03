@@ -1186,7 +1186,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T omega_pr = omega - 1.0;
           T omega_th = omega;
           T omega_nm = 0;
-          T omega_sgs = 2.-omega_eddy;//0.86*omega;
+          T omega_sgs = omega-omega_eddy;//0.86*omega;
 //          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * ffneq[i] - omega_sgs * feq_sgs;
           tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
 
@@ -1345,7 +1345,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =100000;
+  T Re =1e6;
   T Ma = 0.1;
 
   // reference dimensions
