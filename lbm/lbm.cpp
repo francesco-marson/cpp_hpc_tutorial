@@ -657,10 +657,10 @@ auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array
             g.flags_matrix(x, y, i) = g.inlet;
         else if (x == (g.nx - 1) and g.cx[i] > 0)
             g.flags_matrix(x, y, i) = g.outlet;
-        else if (y == 0 and g.cy[i] < 0)
-            g.flags_matrix(x, y, i) = g.outlet;
-        else if (y == g.ny-1 and g.cy[i] > 0)
-            g.flags_matrix(x, y, i) = g.outlet;
+//        else if (y == 0 and g.cy[i] < 0)
+//            g.flags_matrix(x, y, i) = g.outlet;
+//        else if (y == g.ny-1 and g.cy[i] > 0)
+//            g.flags_matrix(x, y, i) = g.outlet;
         else {
             auto intersection =
                     segment_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]);
@@ -1133,7 +1133,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.18;
+      T Cs = 0.2;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1146,7 +1146,9 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Compute the eddy viscosity
       T eddy_viscosity = 2.*(Cs * delta) * (Cs * delta) * S_mag;
       T tau_eddy = eddy_viscosity/g.cslb2+0.5/*+tau*/;
+      T tau_smago = eddy_viscosity/g.cslb2+0.5+tau;
       T omega_eddy = 1./tau_eddy;
+      T omega_smago = 1./tau_smago;
 
 //      printf("%e,%e\n",omega,omega_eddy);
     // Compute equilibrium distributions
@@ -1179,18 +1181,21 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //
           // Collide step
-//          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
-//          tmpf[i] = (1.0 - omega) * (feq[i]+ffneq[i]) + omega * feq[i];
+//          tmpf[i] = (1.0 - omega_smago) * tmpf[i] + omega_smago * feq[i];
           T feq_sgs = tmpf[i]-ffneq[i] - feq[i];
+          T feq_sgs_opp = tmpf[iopp]-ffneq[iopp] - feq[iopp];
           T fneq = tmpf[i] - feq[i];
+          T fneq_opp = tmpf[iopp] - feq[iopp];
           T omega_pr = omega - 1.0;
           T omega_th = omega;
           T omega_nm = 0;
           T omega_sgs = omega-omega_eddy;//0.86*omega;
 //          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * ffneq[i] - omega_sgs * feq_sgs;
           tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
+//          tmpf[i] = (feq[i] + /*feq_sgs +*/ ffneq[i]) - omega * ffneq[i];
 
 //        T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
+        T tmpf_iopp = (feq[iopp] + feq_sgs_opp + ffneq[iopp]) - omega * fneq_opp + omega_sgs * feq_sgs_opp;
 
           // Streaming with consideration for periodic boundaries
           int x_stream = x + g.cx[i];
@@ -1202,8 +1207,8 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_matrix(x,y,i) == g.hwbb) {
           T q = g.dynamic_matrix(x,y,i)/g.cnorm[i];
-        g.f_matrix_2(x, y, iopp) = tmpf[i];
-//          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
+//        g.f_matrix_2(x, y, iopp) = tmpf[i];
+          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
       } else if (g.flags_matrix(x,y,i) == g.inlet) {
         g.f_matrix_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_matrix(x,y,i) == g.outlet) {
@@ -1324,8 +1329,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 300;
-  int ny = 300;
+  int nx = 900;
+  int ny = 200;
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
@@ -1345,7 +1350,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1e6;
+  T Re =1e5;
   T Ma = 0.1;
 
   // reference dimensions
@@ -1356,8 +1361,9 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 5.*Tlb;
-  int outputIter = num_steps / 100;
+  int num_steps = 1.1*Tlb;
+  int outputIter = num_steps / 200;
+  int start_output = 0.1*Tlb;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
@@ -1365,11 +1371,11 @@ int main() {
   printf("u_lb = %f\ntau = %f\nomega=%f\n", ulb,tau,1./tau);
 
 //  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-20));
+  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-25));
 
 
   // Initialize the D2Q9lattice with the double shear layer
-  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
+//  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -1390,8 +1396,8 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStrainTensor(g->velocity_matrix,g->strain_matrix,6);
-    if (t % outputIter == 0) {
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix,2);
+    if (t >= start_output and t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
 //      D2Q9lattice::Flags* flags_matrix = g->flags_matrix.data_handle();
