@@ -1144,7 +1144,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.25;
+      T Cs = 0.22;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1340,8 +1340,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 128;
-  int ny = 128;
+  int nx = 512;
+  int ny = 512;
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
@@ -1361,7 +1361,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1e4;
+  T Re =1e6;
   T Ma = 0.12;
 
   // reference dimensions
@@ -1372,8 +1372,8 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 1.0*Tlb;
-  int outputIter = num_steps / 10;
+  int num_steps = 2.0*Tlb;
+  int outputIter = num_steps / 20;
   int start_output = 0.0*Tlb;
 
   printf("T_lb = %f\n", Tlb);
