@@ -1144,7 +1144,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.2;
+      T Cs = 0.25;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1218,8 +1218,8 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_matrix(x,y,i) == g.hwbb) {
           T q = g.dynamic_matrix(x,y,i)/g.cnorm[i];
-//        g.f_matrix_2(x, y, iopp) = tmpf[i];
-          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
+        g.f_matrix_2(x, y, iopp) = tmpf[i];
+//          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
       } else if (g.flags_matrix(x,y,i) == g.inlet) {
         g.f_matrix_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_matrix(x,y,i) == g.outlet) {
@@ -1340,8 +1340,8 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 900;
-  int ny = 200;
+  int nx = 128;
+  int ny = 128;
   T llb = ny/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
@@ -1361,8 +1361,8 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =5e5;
-  T Ma = 0.1;
+  T Re =1e4;
+  T Ma = 0.12;
 
   // reference dimensions
   T ulb = Ma * g->cslb;
@@ -1372,21 +1372,23 @@ int main() {
 
   T Tlb = g->nx / ulb;
   // Time-stepping loop parameters
-  int num_steps = 1.1*Tlb;
-  int outputIter = num_steps / 200;
-  int start_output = 0.1*Tlb;
+  int num_steps = 1.0*Tlb;
+  int outputIter = num_steps / 10;
+  int start_output = 0.0*Tlb;
 
   printf("T_lb = %f\n", Tlb);
   printf("num_steps = %d\n", num_steps);
+  printf("outputIter = %d\n", outputIter);
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\nomega=%f\n", ulb,tau,1./tau);
 
 //  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "1118",0));
+//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "0012",-5));
 
 
   // Initialize the D2Q9lattice with the double shear layer
 //  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
+  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -1396,7 +1398,7 @@ int main() {
 
 
   // Loop over time steps
-  for (int t = 0; t < num_steps; ++t) {
+  for (int t = 0; t <= num_steps; ++t) {
 
     if (t == warm_up_iter)
       start_time = std::chrono::high_resolution_clock::now();
@@ -1407,7 +1409,7 @@ int main() {
     // Output results every outputIter iterations
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
-      computeStrainTensor(g->velocity_matrix,g->strain_matrix,2);
+      computeStrainTensor(g->velocity_matrix,g->strain_matrix,6);
     if (t >= start_output and t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
@@ -1432,6 +1434,8 @@ int main() {
 
       std::string filename = "output_" + std::to_string(t) + ".vtk";
       auto before_out = std::chrono::high_resolution_clock::now();
+
+        printf("writing results at iter = %d, convective time = %f\n", t, (T)t/(T)Tlb);
       writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
 
       auto after_out = std::chrono::high_resolution_clock::now();
