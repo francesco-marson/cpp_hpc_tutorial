@@ -560,26 +560,31 @@ void computeMoments(Lattice& g, bool even = true, bool before_cs = true) {
 std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint length, unsigned int tesselation,
                                                   const std::string& naca, double aoa_deg) {
     std::vector<std::array<T,2> > points;
-    double t = std::stoi(naca.substr(2, 2)) / 100.0;
-    double m = std::stoi(naca.substr(0, 1)) / 100.0;
-    double p = std::stoi(naca.substr(1, 1)) / 10.0;
+    double t = std::stoi(naca.substr(2, 2)) / 100.0; // Thickness
+    double m = std::stoi(naca.substr(0, 1)) / 100.0; // Maximum camber
+    double p = std::stoi(naca.substr(1, 1)) / 10.0;  // Position of maximum camber
 
     double aoa_rad = M_PI * aoa_deg / 180.0; // Convert aoa to radians
 
     for (unsigned int i = 0; i <= tesselation; ++i) {
         double x = ((double)i) / tesselation;
         double yt = 5 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * pow(x, 2) + 0.2843 * pow(x, 3) - 0.1015 * pow(x, 4));
-        double yc;
-        if (x <= p) {
-            yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
-        } else {
-            yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+        double yc = 0.0; // Default for symmetric airfoils
+
+        // Calculate camber line only if m > 0 (non-symmetric airfoil)
+        if (m > 0) {
+            if (x <= p) {
+                yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
+            } else {
+                yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+            }
         }
-        double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
+
+        double theta = (m > 0) ? atan(m / pow(p, 2) * (2 * p - 2 * x)) : 0.0; // Angle for rotation
 
         // Apply rotation using rotation matrix
-        double x1 = (x - yt * sin(theta))*length;
-        double x2 = (yc + yt * cos(theta))*length;
+        double x1 = (x - yt * sin(theta)) * length;
+        double x2 = (yc + yt * cos(theta)) * length;
         double xr = x1 * cos(aoa_rad) - x2 * sin(aoa_rad);
         double yr = x1 * sin(aoa_rad) + x2 * cos(aoa_rad);
 
@@ -589,17 +594,22 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
     for (int i = tesselation-1; i >= 0; --i) {
         double x = ((double)i) / tesselation;
         double yt = 5 * t * (0.2969 * sqrt(x) - 0.1260 * x - 0.3516 * pow(x, 2) + 0.2843 * pow(x, 3) - 0.1015 * pow(x, 4));
-        double yc;
-        if (x <= p) {
-            yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
-        } else {
-            yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+        double yc = 0.0; // Default for symmetric airfoils
+
+        // Calculate camber line only if m > 0 (non-symmetric airfoil)
+        if (m > 0) {
+            if (x <= p) {
+                yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
+            } else {
+                yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+            }
         }
-        double theta = atan(m / pow(p, 2) * (2 * p - 2 * x));
+
+        double theta = (m > 0) ? atan(m / pow(p, 2) * (2 * p - 2 * x)) : 0.0; // Angle for rotation
 
         // Apply rotation using rotation matrix
-        double x1 = (x + yt * sin(theta))*length;
-        double x2 = (yc - yt * cos(theta))*length;
+        double x1 = (x + yt * sin(theta)) * length;
+        double x2 = (yc - yt * cos(theta)) * length;
         double xr = x1 * cos(aoa_rad) - x2 * sin(aoa_rad);
         double yr = x1 * sin(aoa_rad) + x2 * cos(aoa_rad);
 
@@ -608,6 +618,7 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
 
     return points;
 }
+
 
 template<typename Lattice>
 auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array<T, 2>>& segments){
@@ -1350,7 +1361,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1e5;
+  T Re =5e5;
   T Ma = 0.1;
 
   // reference dimensions
@@ -1371,7 +1382,7 @@ int main() {
   printf("u_lb = %f\ntau = %f\nomega=%f\n", ulb,tau,1./tau);
 
 //  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "2412",-25));
+  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "1118",0));
 
 
   // Initialize the D2Q9lattice with the double shear layer
