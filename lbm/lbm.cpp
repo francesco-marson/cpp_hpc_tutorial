@@ -39,8 +39,55 @@ void writeVTK2D(
         const std::string &filename,
         tl::cartesian_product_view<std::ranges::iota_view<int, int>, std::ranges::iota_view<int, int>> grid,
         std::vector<std::pair<std::string, MdspanVariant<T, LayoutPolicy>>> fields,
-        int NX, int NY
-) {
+        int NX, int NY,
+        const std::vector <std::array<T, 2>> *segments = nullptr // Optional segment overlay
+) /*{
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        throw std::ios_base::failure("Failed to open file");
+    }
+
+    int N = NX * NY;
+
+    out << "# vtk DataFile Version 3.0\n";
+    out << "2D Test file\n";
+    out << "ASCII\n";
+    out << "DATASET UNSTRUCTURED_GRID\n";
+    out << "POINTS " << N << " double\n";
+
+    // Writing the grid coordinates using cartesian product
+    for (const auto &[iy, ix]: grid) {
+        out << ix << " " << iy << " " << 0 << '\n';
+    }
+
+    // Writing field data
+    out << "POINT_DATA " << N << '\n';
+
+    for (const auto &[field_name, field_data_variant]: fields) {
+        // ... [Rest of original field writing code] ...
+    }
+
+    // Add line segments if provided
+    if (segments != nullptr && !segments->empty()) {
+        out << "\nCELLS " << (segments->size() - 1) << " " << (segments->size() - 1) * 3 << "\n";
+        for (size_t i = 0; i < segments->size() - 1; ++i) {
+            out << "2 " << i << " " << (i + 1) << "\n";
+        }
+        out << "\nCELL_TYPES " << (segments->size() - 1) << "\n";
+        for (size_t i = 0; i < segments->size() - 1; ++i) {
+            out << "3\n"; // VTK_LINE = 3
+        }
+
+        out << "\nPOINTS " << segments->size() << " double\n";
+        for (const auto &point: *segments) {
+            out << point[0] << " " << point[1] << " 0.0\n";
+        }
+    }
+
+    out.close();
+}*/
+
+{
     std::ofstream out(filename); // Open the file
 
     if (!out.is_open()) {
@@ -616,7 +663,112 @@ std::vector<std::array<T,2> > generateNACAAirfoil(std::array<T,2> origin, uint l
         points.push_back(std::array<T,2>{xr + origin[0], yr + origin[1]});
     }
 
+    // Add closing segment if needed
+    if (points.front()[0] != points.back()[0] || points.front()[1] != points.back()[1]) {
+        points.push_back(points.front());  // Add first point again to close the contour
+    }
+
     return points;
+}
+
+std::vector<std::array<T,2> > generateNACAAirfoil_non_uniform(std::array<T,2> origin, uint length, unsigned int tesselation,
+                                                  const std::string& naca, double aoa_deg) {
+    std::vector<std::array<T,2> > points;
+    points.reserve(2 * tesselation + 2); // Pre-allocate memory
+
+    double t = std::stoi(naca.substr(2, 2)) / 100.0; // Thickness
+    double m = std::stoi(naca.substr(0, 1)) / 100.0; // Maximum camber
+    double p = std::stoi(naca.substr(1, 1)) / 10.0;  // Position of maximum camber
+
+    double aoa_rad = M_PI * aoa_deg / 180.0; // Convert aoa to radians
+
+    // Use finer tessellation near leading and trailing edges
+    auto generatePoint = [&](double x, bool upper) -> std::array<T, 2> {
+        // NACA thickness distribution
+        double x_root = std::sqrt(x); // Use square root for finer leading edge resolution
+        double yt =
+                5 * t * (0.2969 * x_root - 0.1260 * x - 0.3516 * pow(x, 2) + 0.2843 * pow(x, 3) - 0.1015 * pow(x, 4));
+
+        double yc = 0.0;
+        double dycdx = 0.0;
+
+        // Calculate camber line and its derivative only if m > 0 (non-symmetric airfoil)
+        if (m > 0) {
+            if (x <= p) {
+                yc = m / pow(p, 2) * (2 * p * x - pow(x, 2));
+                dycdx = 2 * m / pow(p, 2) * (p - x);
+            } else {
+                yc = m / pow(1-p, 2) * ((1 - 2 * p) + 2 * p * x - pow(x, 2));
+                dycdx = 2 * m / pow(1 - p, 2) * (p - x);
+            }
+        }
+
+        double theta = atan(dycdx);
+        double sign = upper ? 1 : -1;
+
+        // Apply rotation using rotation matrix with improved precision
+        double x1 = (x - sign * yt * sin(theta)) * length;
+        double x2 = (yc + sign * yt * cos(theta)) * length;
+        double xr = x1 * cos(aoa_rad) - x2 * sin(aoa_rad);
+        double yr = x1 * sin(aoa_rad) + x2 * cos(aoa_rad);
+
+        return std::array < T, 2 > {xr + origin[0], yr + origin[1]};
+    };
+
+    // Generate points with non-uniform spacing (clustered near leading and trailing edges)
+    auto firstPoint = generatePoint(0.0, true); // Store first point
+    points.push_back(firstPoint);
+
+    for (unsigned int i = 1; i <= tesselation; ++i) {
+        double x = 0.5 * (1.0 - cos(M_PI * i / tesselation)); // Cosine spacing
+        points.push_back(generatePoint(x, true));
+    }
+
+    // Generate lower surface points (reverse order)
+    for (int i = tesselation-1; i >= 0; --i) {
+        double x = 0.5 * (1.0 - cos(M_PI * i / tesselation)); // Cosine spacing
+        points.push_back(generatePoint(x, false));
+    }
+
+    // Add first point again to close the airfoil
+    points.push_back(firstPoint); // Use stored first point for exact closure
+
+    // Ensure minimum segment length and add intermediate points if necessary
+    const double min_segment_length = length / (10.0 * tesselation);
+    std::vector <std::array<T, 2>> refined_points;
+    refined_points.reserve(points.size() * 2);
+
+    for (size_t i = 0; i < points.size() - 1; ++i) {
+        refined_points.push_back(points[i]);
+
+        double dx = points[i + 1][0] - points[i][0];
+        double dy = points[i + 1][1] - points[i][1];
+        double segment_length = std::sqrt(dx * dx + dy * dy);
+
+// More aggressive refinement for better intersection detection
+        if (segment_length > min_segment_length) {
+            int n_intermediate = static_cast<int>(std::ceil(segment_length / (min_segment_length * 0.5)));
+            for (int j = 1; j < n_intermediate; ++j) {
+                double t = static_cast<double>(j) / n_intermediate;
+                refined_points.push_back(std::array < T, 2 > {
+                        points[i][0] + t * dx,
+                        points[i][1] + t * dy
+                });
+            }
+    }
+    }
+    refined_points.push_back(points.back()); // Add final point (same as first)
+
+    // Verify closure
+    const double closure_tolerance = 1e-10;
+    bool is_closed = std::abs(refined_points.front()[0] - refined_points.back()[0]) < closure_tolerance &&
+                     std::abs(refined_points.front()[1] - refined_points.back()[1]) < closure_tolerance;
+
+    if (!is_closed) {
+        std::cerr << "Warning: Airfoil curve is not properly closed!" << std::endl;
+    }
+
+    return refined_points;
 }
 
 
@@ -640,9 +792,11 @@ auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array
         return minValue;
     };
 
-    // Lambda for line segment intersection
+    // Lambda for line segment intersection with improved numerical stability
     auto segment_intersect_segment = [segments,getMinimumPositive](T x1, T y1, T x2, T y2) -> std::optional<T> {
         std::vector<T> intersections;
+        const T EPSILON = std::numeric_limits<T>::epsilon(); // Use system epsilon for type T
+
         for (auto it = segments.begin(); it != segments.end(); ++it){
             const auto& segment = *it;
             const auto& segment_next = it != std::prev(segments.end()) ? *(it +1) : segments.front();
@@ -651,11 +805,24 @@ auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array
             T s2_x = segment_next[0] - segment[0];
             T s2_y = segment_next[1] - segment[1];
 
-            T s = (-s1_y * (x1 - segment[0]) + s1_x * (y1 - segment[1])) / (-s2_x * s1_y + s1_x * s2_y);
-            T t = (s2_x * (y1 - segment[1]) - s2_y * (x1 - segment[0])) / (-s2_x * s1_y + s1_x * s2_y);
+            // Check if lines are parallel (cross product near zero)
+            T denominator = (-s2_x * s1_y + s1_x * s2_y);
+            if (std::abs(denominator) < EPSILON) continue;
 
-            if (s >= 0 && s <= 1 && t >= 0 && t <= 1)
-                intersections.push_back(std::sqrt(s1_x * s1_x + s1_y * s1_y) * t);
+            T s = (-s1_y * (x1 - segment[0]) + s1_x * (y1 - segment[1])) / denominator;
+            T t = (s2_x * (y1 - segment[1]) - s2_y * (x1 - segment[0])) / denominator;
+
+            // Slightly expand the intersection acceptance range
+            if (s >= -EPSILON && s <= 1 + EPSILON && t >= -EPSILON && t <= 1 + EPSILON) {
+                // Clamp values to valid range
+                s = std::clamp(s, 0.0f, 1.0f);
+                t = std::clamp(t, 0.0f, 1.0f);
+
+                T distance = std::sqrt(s1_x * s1_x + s1_y * s1_y) * t;
+                if (distance > EPSILON) { // Only include non-zero distances
+                    intersections.push_back(distance);
+                }
+            }
         }
 
         return getMinimumPositive(intersections);
@@ -675,7 +842,7 @@ auto line_segments_flags_initialization(Lattice& g, const std::vector<std::array
         else {
             auto intersection =
                     segment_intersect_segment(x, y, x + g.cx[i], y + g.cy[i]);
-            if (intersection.has_value() and intersection.value() < g.cnorm[i]) {
+            if (intersection.has_value() and intersection.value() <= g.cnorm[i]) {
                 g.flags_matrix(x, y, i) = g.hwbb;
                 g.dynamic_matrix(x, y, i) = intersection.value();
             } else {
@@ -1144,7 +1311,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.22;
+      T Cs = 0.35;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1205,7 +1372,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
 //          tmpf[i] = (feq[i] + /*feq_sgs +*/ ffneq[i]) - omega * ffneq[i];
 
-//        T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq_iopp;
+//        T tmpf_iopp = (1.0 - omega_smago) * tmpf[iopp] + omega_smago * feq_iopp;
         T tmpf_iopp = (feq[iopp] + feq_sgs_opp + ffneq[iopp]) - omega * fneq_opp + omega_sgs * feq_sgs_opp;
 
           // Streaming with consideration for periodic boundaries
@@ -1334,15 +1501,42 @@ void initializeDoubleShearLayer(Lattice &g, T U0, T alpha=80, T delta=0.05) {
     }
   }
 }
+// Generate airfoil with higher resolution
+void writeSegmentsVTK(const std::string& filename, const std::vector<std::array<T,2>>& points) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        throw std::ios_base::failure("Failed to open file");
+    }
 
+    // Write VTK header
+    out << "# vtk DataFile Version 3.0\n";
+    out << "Line Segments\n";
+    out << "ASCII\n";
+    out << "DATASET POLYDATA\n";
+
+    // Write points
+    out << "POINTS " << points.size() << " float\n";
+    for (const auto& point : points) {
+        out << point[0] << " " << point[1] << " 0.0\n";
+    }
+
+    // Write lines connecting consecutive points
+    int numLines = points.size() - 1;
+    out << "LINES " << numLines << " " << numLines * 3 << "\n";
+    for (int i = 0; i < numLines; ++i) {
+        out << "2 " << i << " " << (i + 1) << "\n";
+    }
+
+    out.close();
+}
 
 int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 512;
-  int ny = 512;
-  T llb = ny/*/11.*/;
+  int nx = 800;
+  int ny = 200;
+  T llb = nx/4./*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
   auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
@@ -1382,13 +1576,38 @@ int main() {
   printf("warm_up_iter = %d\n", warm_up_iter);
   printf("u_lb = %f\ntau = %f\nomega=%f\n", ulb,tau,1./tau);
 
-//  initializeDipoleWallCollision(*g,(T)Re, (T)nu,g->ny/(T)10.,g->nx/(T)2.+g->ny/(T)10.,g->ny/(T)2.,g->nx/(T)2.-g->ny/(T)10.,g->ny/(T)2.);
-//  line_segments_flags_initialization(*g,generateNACAAirfoil(std::array<T,2>{g->nx/3.+0.1,g->ny/2.+0.1},g->ny/1.5,g->ny, "0012",-5));
+
+
+    auto airfoil_points = generateNACAAirfoil(
+            std::array < T, 2 > {g->nx / 3. + 0.112, g->ny / 2. + 0.1012},
+            g->llb,
+            g->llb * 4, // Increased tessellation for better resolution
+            "0012",
+            -15.2
+    );
+
+// Write airfoil segments to VTK file
+writeSegmentsVTK("airfoil_segments.vtk", airfoil_points);
+
+//// Add extra check points between segments to ensure no gaps
+//    std::vector <std::array<T, 2>> refined_segments;
+//    refined_segments.reserve(airfoil_points.size() * 2);
+//
+//// Add midpoints between segments to catch potential missed intersections
+//    for (size_t i = 0; i < airfoil_points.size() - 1; i++) {
+//        refined_segments.push_back(airfoil_points[i]);
+//        auto mid_x = (airfoil_points[i][0] + airfoil_points[i + 1][0]) * 0.5;
+//        auto mid_y = (airfoil_points[i][1] + airfoil_points[i + 1][1]) * 0.5;
+//        refined_segments.push_back(std::array < T, 2 > {mid_x, mid_y});
+//    }
+//    refined_segments.push_back(airfoil_points.back());
+
+    line_segments_flags_initialization(*g, airfoil_points);
 
 
   // Initialize the D2Q9lattice with the double shear layer
 //  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
-  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
+//  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -1436,7 +1655,7 @@ int main() {
       auto before_out = std::chrono::high_resolution_clock::now();
 
         printf("writing results at iter = %d, convective time = %f\n", t, (T)t/(T)Tlb);
-      writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny);
+writeVTK2D(filename, std::views::cartesian_product(ys, xs), fields, nx, ny/*, &airfoil_points*/);
 
       auto after_out = std::chrono::high_resolution_clock::now();
 
