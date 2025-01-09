@@ -1311,7 +1311,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.35;
+      T Cs = 0.3;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1324,7 +1324,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Compute the eddy viscosity
       T eddy_viscosity = 2.*(Cs * delta) * (Cs * delta) * S_mag;
       T tau_eddy = eddy_viscosity/g.cslb2+0.5/*+tau*/;
-      T tau_smago = eddy_viscosity/g.cslb2+0.5+tau;
+      T tau_smago = eddy_viscosity/g.cslb2+tau;
       T omega_eddy = 1./tau_eddy;
       T omega_smago = 1./tau_smago;
 
@@ -1359,7 +1359,6 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      T feq_iopp = g.w[i] * (rhob+(T)1.0) * (1.0 - 3. * cu + 4.5 * cu_sq - 1.5 * u_sq)-g.w[i];
 //
           // Collide step
-//          tmpf[i] = (1.0 - omega_smago) * tmpf[i] + omega_smago * feq[i];
           T feq_sgs = tmpf[i]-ffneq[i] - feq[i];
           T feq_sgs_opp = tmpf[iopp]-ffneq[iopp] - feq[iopp];
           T fneq = tmpf[i] - feq[i];
@@ -1367,12 +1366,14 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T omega_pr = omega - 1.0;
           T omega_th = omega;
           T omega_nm = 0;
-          T omega_sgs = omega-omega_eddy;//0.86*omega;
-//          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * ffneq[i] - omega_sgs * feq_sgs;
+          T omega_sgs = (omega-omega_eddy)*omega/omega_eddy;//0.86*omega;
+//          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
+//          tmpf[i] = (1.0 - omega_smago) * tmpf[i] + omega_smago * feq[i];
           tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
 //          tmpf[i] = (feq[i] + /*feq_sgs +*/ ffneq[i]) - omega * ffneq[i];
 
-//        T tmpf_iopp = (1.0 - omega_smago) * tmpf[iopp] + omega_smago * feq_iopp;
+//        T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq[iopp];
+//        T tmpf_iopp = (1.0 - omega_smago) * tmpf[iopp] + omega_smago * feq[iopp];
         T tmpf_iopp = (feq[iopp] + feq_sgs_opp + ffneq[iopp]) - omega * fneq_opp + omega_sgs * feq_sgs_opp;
 
           // Streaming with consideration for periodic boundaries
@@ -1385,8 +1386,8 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Handle periodic and bounce-back boundary conditions
       if (g.flags_matrix(x,y,i) == g.hwbb) {
           T q = g.dynamic_matrix(x,y,i)/g.cnorm[i];
-        g.f_matrix_2(x, y, iopp) = tmpf[i];
-//          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
+//        g.f_matrix_2(x, y, iopp) = tmpf[i];
+          g.f_matrix_2(x, y, iopp) = q * 0.5*(tmpf[i]+tmpf_iopp) + (1.-q)*0.5*(g.f_matrix(x, y, i)+g.f_matrix(x, y, iopp));
       } else if (g.flags_matrix(x,y,i) == g.inlet) {
         g.f_matrix_2(x, y, g.opposite[i]) = tmpf[i] - 2.0 * g.invCslb2 * (ulb * g.cx[i]) * g.w[i];
       } else if (g.flags_matrix(x,y,i) == g.outlet) {
@@ -1534,9 +1535,9 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 800;
-  int ny = 200;
-  T llb = nx/4./*/11.*/;
+  int nx = 256;
+  int ny = 256;
+  T llb = nx/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
   auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
@@ -1555,7 +1556,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =1e6;
+  T Re =3e4;
   T Ma = 0.12;
 
   // reference dimensions
@@ -1578,36 +1579,21 @@ int main() {
 
 
 
-    auto airfoil_points = generateNACAAirfoil(
-            std::array < T, 2 > {g->nx / 3. + 0.112, g->ny / 2. + 0.1012},
-            g->llb,
-            g->llb * 4, // Increased tessellation for better resolution
-            "0012",
-            -15.2
-    );
-
-// Write airfoil segments to VTK file
-writeSegmentsVTK("airfoil_segments.vtk", airfoil_points);
-
-//// Add extra check points between segments to ensure no gaps
-//    std::vector <std::array<T, 2>> refined_segments;
-//    refined_segments.reserve(airfoil_points.size() * 2);
-//
-//// Add midpoints between segments to catch potential missed intersections
-//    for (size_t i = 0; i < airfoil_points.size() - 1; i++) {
-//        refined_segments.push_back(airfoil_points[i]);
-//        auto mid_x = (airfoil_points[i][0] + airfoil_points[i + 1][0]) * 0.5;
-//        auto mid_y = (airfoil_points[i][1] + airfoil_points[i + 1][1]) * 0.5;
-//        refined_segments.push_back(std::array < T, 2 > {mid_x, mid_y});
-//    }
-//    refined_segments.push_back(airfoil_points.back());
-
-    line_segments_flags_initialization(*g, airfoil_points);
+//    auto airfoil_points = generateNACAAirfoil(
+//            std::array < T, 2 > {g->nx / 3. + 0.112, g->ny / 2. + 0.1012},
+//            g->llb,
+//            g->llb * 4, // Increased tessellation for better resolution
+//            "0012",
+//            -15.2
+//    );
+//// Write airfoil segments to VTK file
+//writeSegmentsVTK("airfoil_segments.vtk", airfoil_points);
+//    line_segments_flags_initialization(*g, airfoil_points);
 
 
   // Initialize the D2Q9lattice with the double shear layer
 //  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
-//  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
+  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
