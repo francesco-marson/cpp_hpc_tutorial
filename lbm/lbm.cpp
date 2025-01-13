@@ -41,53 +41,7 @@ void writeVTK2D(
         std::vector<std::pair<std::string, MdspanVariant<T, LayoutPolicy>>> fields,
         int NX, int NY,
         const std::vector <std::array<T, 2>> *segments = nullptr // Optional segment overlay
-) /*{
-    std::ofstream out(filename);
-    if (!out.is_open()) {
-        throw std::ios_base::failure("Failed to open file");
-    }
-
-    int N = NX * NY;
-
-    out << "# vtk DataFile Version 3.0\n";
-    out << "2D Test file\n";
-    out << "ASCII\n";
-    out << "DATASET UNSTRUCTURED_GRID\n";
-    out << "POINTS " << N << " double\n";
-
-    // Writing the grid coordinates using cartesian product
-    for (const auto &[iy, ix]: grid) {
-        out << ix << " " << iy << " " << 0 << '\n';
-    }
-
-    // Writing field data
-    out << "POINT_DATA " << N << '\n';
-
-    for (const auto &[field_name, field_data_variant]: fields) {
-        // ... [Rest of original field writing code] ...
-    }
-
-    // Add line segments if provided
-    if (segments != nullptr && !segments->empty()) {
-        out << "\nCELLS " << (segments->size() - 1) << " " << (segments->size() - 1) * 3 << "\n";
-        for (size_t i = 0; i < segments->size() - 1; ++i) {
-            out << "2 " << i << " " << (i + 1) << "\n";
-        }
-        out << "\nCELL_TYPES " << (segments->size() - 1) << "\n";
-        for (size_t i = 0; i < segments->size() - 1; ++i) {
-            out << "3\n"; // VTK_LINE = 3
-        }
-
-        out << "\nPOINTS " << segments->size() << " double\n";
-        for (const auto &point: *segments) {
-            out << point[0] << " " << point[1] << " 0.0\n";
-        }
-    }
-
-    out.close();
-}*/
-
-{
+) {
     std::ofstream out(filename); // Open the file
 
     if (!out.is_open()) {
@@ -192,7 +146,7 @@ struct D2Q9lattice {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-    exper::mdspan<T, rnk2, layout> rhob_matrix;
+    exper::mdspan<T, rnk2, layout> rhob_matrix,turbulent_energy_matrix,turbulent_dissipation_matrix;
   exper::mdspan<T, rnk3,layout> f_matrix, f_matrix_2, dynamic_matrix,velocity_matrix,rhob_matrix_;
   exper::mdspan<T, rnk4,layout> strain_matrix;
 
@@ -201,7 +155,8 @@ struct D2Q9lattice {
   exper::mdspan<Flags, rnk3,layout> flags_matrix;
 
   D2Q9lattice(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
-                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars+ nx * ny * 4, 1.0),
+                                       buffer(nx * ny * q * 2 + nx * ny * 3 + nx * ny * number_dynamic_scalars +
+                                              nx * ny * 4 + nx * ny * 2, 1.0),
                                                                        flags_buffer(nx * ny * q,bulk)
 
   {
@@ -215,6 +170,10 @@ struct D2Q9lattice {
     dynamic_matrix = exper::mdspan<T, rnk3,layout>(dynamic_matrix_starting_index, nx, ny,number_dynamic_scalars);
     auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
     strain_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
+      auto turbulent_energy_starting_index = stresses_starting_index + strain_matrix.size();
+      turbulent_energy_matrix = exper::mdspan<T, rnk2, layout>(turbulent_energy_starting_index, nx, ny);
+      auto turbulent_dissipation_starting_index = turbulent_energy_starting_index + turbulent_energy_matrix.size();
+      turbulent_dissipation_matrix = exper::mdspan<T, rnk2, layout>(turbulent_dissipation_starting_index, nx, ny);
 
     flags_matrix = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
 
@@ -284,7 +243,7 @@ struct D2Q9latticePalabos {
 
   std::vector<T> buffer;
   std::vector<Flags> flags_buffer;
-    exper::mdspan<T, rnk2, layout> rhob_matrix;
+    exper::mdspan<T, rnk2, layout> rhob_matrix,turbulent_energy_matrix,turbulent_dissipation_matrix;
   exper::mdspan<T, rnk3,layout> f_matrix, f_matrix_2, dynamic_matrix,velocity_matrix,rhob_matrix_;
   exper::mdspan<T, rnk4,layout> strain_matrix;
 
@@ -293,7 +252,8 @@ struct D2Q9latticePalabos {
   exper::mdspan<Flags, rnk3,layout> flags_matrix;
 
     D2Q9latticePalabos(int nx, int ny, T llb) : nx(nx), ny(ny), llb(llb),
-                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars+ nx * ny * 4, 1.0),
+                         buffer(nx * ny * q * 2 + nx * ny * 3+ nx * ny * number_dynamic_scalars+ nx * ny * 4+
+                                                                                                 nx * ny * 4 + nx * ny * 2, 1.0),
                                                                        flags_buffer(nx * ny * q,bulk)
 
   {
@@ -307,6 +267,10 @@ struct D2Q9latticePalabos {
     dynamic_matrix = exper::mdspan<T, rnk3,layout>(dynamic_matrix_starting_index, nx, ny,number_dynamic_scalars);
     auto stresses_starting_index = dynamic_matrix_starting_index + dynamic_matrix.size();
     strain_matrix = exper::mdspan<T, rnk4,layout>(stresses_starting_index, nx, ny,2,2);
+      auto turbulent_energy_starting_index = stresses_starting_index + strain_matrix.size();
+      turbulent_energy_matrix = exper::mdspan<T, rnk2, layout>(turbulent_energy_starting_index, nx, ny);
+      auto turbulent_dissipation_starting_index = turbulent_energy_starting_index + turbulent_energy_matrix.size();
+      turbulent_dissipation_matrix = exper::mdspan<T, rnk2, layout>(turbulent_dissipation_starting_index, nx, ny);
 
     flags_matrix = exper::mdspan<Flags, rnk3,layout>(flags_buffer.data(), nx, ny,q);
 
@@ -517,6 +481,76 @@ std::vector<T> getFiniteDifferenceCoefficients(int order) {
         default:
             throw std::invalid_argument("Unsupported order");
     }
+}
+
+
+void computeTurbulentEnergy(const exper::mdspan <T, rnk3, layout> &velocity,
+                            exper::mdspan <T, rnk2, layout> &turbulent_energy,
+                            int order = 6) {
+    auto nx = velocity.extent(0);
+    auto ny = velocity.extent(1);
+
+    // Check extents matching
+    assert(nx == turbulent_energy.extent(0) && ny == turbulent_energy.extent(1));
+
+    // Get the coefficients and kernel half-width for a specific order
+    const auto coeff = getFiniteDifferenceCoefficients(order);
+    int kernel_half_width = (coeff.size() - 1) / 2 + 1;
+
+    // Cartesian product of indexes
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(xs, ys);
+
+    // Compute turbulent kinetic energy in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&turbulent_energy, &velocity, nx, ny](auto coord) {
+                      auto [x, y] = coord;
+
+                      // Get velocity fluctuations (assuming mean flow is subtracted)
+                      T u_prime = velocity(x, y, 0);
+                      T v_prime = velocity(x, y, 1);
+
+                      // Compute turbulent kinetic energy as 0.5 * (u'²  + v'²)
+                      turbulent_energy(x, y) = 0.5 * (u_prime * u_prime + v_prime * v_prime);
+                  });
+}
+
+void computeTurbulentDissipation(const exper::mdspan<T, rnk3, layout>& velocity,
+                                 exper::mdspan<T, rnk2, layout>& turbulent_dissipation,
+                                 const exper::mdspan<T, rnk4, layout>& strain_tensor,
+                                 int order = 6) {
+    auto nx = velocity.extent(0);
+    auto ny = velocity.extent(1);
+
+    // Check extents matching
+    assert(nx == turbulent_dissipation.extent(0) && ny == turbulent_dissipation.extent(1));
+
+    // Get the coefficients and kernel half-width for a specific order
+    const auto coeff = getFiniteDifferenceCoefficients(order);
+    int kernel_half_width = (coeff.size() - 1) / 2 + 1;
+
+    // Cartesian product of indexes
+    auto xs = std::views::iota(0, nx);
+    auto ys = std::views::iota(0, ny);
+    auto xys = std::views::cartesian_product(xs, ys);
+
+    // Compute the turbulent dissipation in parallel
+    std::for_each(std::execution::par, xys.begin(), xys.end(),
+                  [&turbulent_dissipation, &strain_tensor, nx, ny](auto coord) {
+                      auto [x, y] = coord;
+
+                      // Compute the magnitude of the strain rate tensor
+                      T Sxx = strain_tensor(x, y, 0, 0);
+                      T Syy = strain_tensor(x, y, 1, 1);
+                      T Sxy = strain_tensor(x, y, 0, 1);
+
+                      // Compute the turbulent dissipation rate
+                      T dissipation = 2.0 * (Sxx * Sxx + Syy * Syy + 2.0 * Sxy * Sxy);
+
+                      // Store the result in the turbulent_dissipation matrix
+                      turbulent_dissipation(x, y) = dissipation;
+                  });
 }
 
 
@@ -1311,7 +1345,7 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
 //      printf("%f,%f",tmpf[1], tmpf2[1]);
 
 
-      T Cs = 0.3;
+      T Cs = 0.1;
       T delta = 1.;
       // Compute strain rate tensor components
       T Sxx = g.strain_matrix(x,y,0,0)*0.5;
@@ -1324,9 +1358,12 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
       // Compute the eddy viscosity
       T eddy_viscosity = 2.*(Cs * delta) * (Cs * delta) * S_mag;
       T tau_eddy = eddy_viscosity/g.cslb2+0.5/*+tau*/;
+      T viscosity = (tau -0.5)*g.cslb2;
       T tau_smago = eddy_viscosity/g.cslb2+tau;
       T omega_eddy = 1./tau_eddy;
       T omega_smago = 1./tau_smago;
+      T timeL = g.turbulent_energy_matrix(x,y)/g.turbulent_dissipation_matrix(x,y);
+      T timeK = sqrt(viscosity/g.turbulent_dissipation_matrix(x,y));
 
 //      printf("%e,%e\n",omega,omega_eddy);
     // Compute equilibrium distributions
@@ -1367,14 +1404,15 @@ void collide_stream_two_populations(Lattice &g, T ulb, T tau) {
           T omega_th = omega;
           T omega_nm = 0;
           T omega_sgs = (omega-omega_eddy)*omega/omega_eddy;//0.86*omega;
+//          T omega_sgs = 1./timeK;//0.86*omega;
 //          tmpf[i] = (1.0 - omega) * tmpf[i] + omega * feq[i];
-//          tmpf[i] = (1.0 - omega_smago) * tmpf[i] + omega_smago * feq[i];
-          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
+          tmpf[i] = (1.0 - omega_smago) * tmpf[i] + omega_smago * feq[i];
+//          tmpf[i] = (feq[i] + feq_sgs + ffneq[i]) - omega * fneq + omega_sgs * feq_sgs;
 //          tmpf[i] = (feq[i] + /*feq_sgs +*/ ffneq[i]) - omega * ffneq[i];
 
 //        T tmpf_iopp = (1.0 - omega) * tmpf[iopp] + omega * feq[iopp];
-//        T tmpf_iopp = (1.0 - omega_smago) * tmpf[iopp] + omega_smago * feq[iopp];
-        T tmpf_iopp = (feq[iopp] + feq_sgs_opp + ffneq[iopp]) - omega * fneq_opp + omega_sgs * feq_sgs_opp;
+        T tmpf_iopp = (1.0 - omega_smago) * tmpf[iopp] + omega_smago * feq[iopp];
+//        T tmpf_iopp = (feq[iopp] + feq_sgs_opp + ffneq[iopp]) - omega * fneq_opp + omega_sgs * feq_sgs_opp;
 
           // Streaming with consideration for periodic boundaries
           int x_stream = x + g.cx[i];
@@ -1535,9 +1573,10 @@ int main() {
   int warm_up_iter = 1000;
 
   // numerical resolution
-  int nx = 256;
-  int ny = 256;
-  T llb = nx/*/11.*/;
+  int nx = 400;
+  int ny = 100;
+  T llb = nx/4./*/11.*/;
+//  T llb = nx/*/11.*/;
 
   // Setup D2Q9lattice and initial conditions
   auto g = std::make_unique<D2Q9latticePalabos>(nx, ny,llb);
@@ -1556,7 +1595,7 @@ int main() {
   auto a1a2yxs = std::views::cartesian_product(a1s,a2s,ys, xs);
 
   // nondimentional numbers
-  T Re =3e4;
+  T Re =1e6;
   T Ma = 0.12;
 
   // reference dimensions
@@ -1579,21 +1618,21 @@ int main() {
 
 
 
-//    auto airfoil_points = generateNACAAirfoil(
-//            std::array < T, 2 > {g->nx / 3. + 0.112, g->ny / 2. + 0.1012},
-//            g->llb,
-//            g->llb * 4, // Increased tessellation for better resolution
-//            "0012",
-//            -15.2
-//    );
-//// Write airfoil segments to VTK file
-//writeSegmentsVTK("airfoil_segments.vtk", airfoil_points);
-//    line_segments_flags_initialization(*g, airfoil_points);
+    auto airfoil_points = generateNACAAirfoil(
+            std::array < T, 2 > {g->nx / 3. + 0.112, g->ny / 2. + 0.1012},
+            g->llb,
+            g->llb * 4, // Increased tessellation for better resolution
+            "0012",
+            -15.2
+    );
+// Write airfoil segments to VTK file
+writeSegmentsVTK("airfoil_segments.vtk", airfoil_points);
+    line_segments_flags_initialization(*g, airfoil_points);
 
 
   // Initialize the D2Q9lattice with the double shear layer
 //  initializeDoubleShearLayer(*g, ulb,(T)100.,(T)0.1);
-  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
+//  initializeDoubleShearLayer(*g, ulb,(T)80.,(T)0.05);
 
   // Start time measurement
   auto start_time = std::chrono::high_resolution_clock::now();
@@ -1615,6 +1654,10 @@ int main() {
       // Compute macroscopic variables using the new function
       computeMoments(*g); // Dereference the unique_ptr to pass the reference.
       computeStrainTensor(g->velocity_matrix,g->strain_matrix,6);
+
+computeTurbulentEnergy(g->velocity_matrix,g->turbulent_energy_matrix,6);
+        computeTurbulentDissipation(g->velocity_matrix, g->turbulent_dissipation_matrix, g->strain_matrix, 6);
+
     if (t >= start_output and t % outputIter == 0) {
 
       // Access the underlying raw data pointer;
@@ -1631,7 +1674,9 @@ int main() {
         std::vector<std::pair<std::string, MdspanVariant<T, layout>>> fields = {
                 {"velocity", g->velocity_matrix},
                 {"rhob", g->rhob_matrix},
-                {"stresses", g->strain_matrix}
+                {"stresses", g->strain_matrix},
+                {"turbulent_energy", g->turbulent_energy_matrix},
+                {"turbulent_dissipation", g->turbulent_dissipation_matrix}
         };
 //        fields.push_back(std::make_pair("velocity", g->velocity_matrix));
 
